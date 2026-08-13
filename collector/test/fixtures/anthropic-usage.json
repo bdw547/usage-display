@@ -1,0 +1,12 @@
+{
+  "five_hour": { "utilization": 13, "resets_at": "2026-08-13T19:30:00.266130+00:00" },
+  "seven_day": { "utilization": 51, "resets_at": "2026-08-16T09:00:00.266154+00:00" },
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "extra_usage": { "is_enabled": true, "used_credits": 0 },
+  "limits": [
+    { "kind": "session", "group": "session", "percent": 13, "severity": "normal", "resets_at": "2026-08-13T19:30:00.266130+00:00", "scope": null, "is_active": false },
+    { "kind": "weekly_all", "group": "weekly", "percent": 51, "severity": "normal", "resets_at": "2026-08-16T09:00:00.266154+00:00", "scope": null, "is_active": false },
+    { "kind": "weekly_scoped", "group": "weekly", "percent": 30, "severity": "normal", "resets_at": "2026-08-16T09:00:00.266154+00:00", "scope": "opus", "is_active": true }
+  ]
+}
