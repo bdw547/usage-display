@@ -18,12 +18,20 @@ static lv_obj_t *dots[4]; // one per COLUMN, not per tile — Claude and Tokens 
 static UsageData current;
 
 // Column of the active tile; Claude and Tokens (same column, different row) map to the same dot.
+// Finding 7: lv_tileview's tile_act is only ever set by lv_tileview_set_tile()/_by_index() or a
+// scroll-end event (confirmed in lv_tileview.c: lv_tileview_add_tile() never touches it) — it is
+// NOT set just by adding tiles, so lv_tileview_get_tile_active() can return NULL here (e.g. right
+// after ui_init() builds the grid, before any explicit set-tile call or user swipe). Default the
+// fallback to column 0 (Claude, the actual home tile), not 3 (Settings) — the null/first-call case
+// itself is fixed by ui_init() explicitly calling set_tile_by_index(0,0,...) before first paint;
+// this fallback is defense in depth for any other unmatched case.
 static int activeColumn() {
   lv_obj_t *active = lv_tileview_get_tile_active(tileview);
   if (active == tileClaude || active == tileTokens) return 0;
   if (active == tileCodex) return 1;
   if (active == tileCopilot) return 2;
-  return 3; // tileSettings
+  if (active == tileSettings) return 3;
+  return 0;
 }
 
 static void updateDots() {
@@ -99,6 +107,11 @@ void ui_init() {
     lv_obj_set_style_border_width(dots[i], 0, 0);
     lv_obj_align(dots[i], LV_ALIGN_BOTTOM_MID, (2 * i - 3) * 9, -5);
   }
+  // Finding 7: explicitly land on Claude (col 0) before the first updateDots() call, rather than
+  // leaving tile_act at its zero-initialized NULL — see activeColumn()'s comment. main.cpp's
+  // first-boot-no-creds call to ui_goto_settings() still runs after ui_init() returns and
+  // correctly overrides this when there's really nothing saved to show yet.
+  lv_tileview_set_tile_by_index(tileview, 0, 0, LV_ANIM_OFF);
   updateDots();
 }
 

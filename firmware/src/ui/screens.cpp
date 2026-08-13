@@ -23,6 +23,7 @@ struct LimitScreen {
   lv_obj_t *barLabel, *bar, *barPct, *barSub; // secondary window (weekly)
   lv_obj_t *extraRows[3]; lv_obj_t *extraBars[3]; lv_obj_t *extraPcts[3];
   lv_obj_t *na;                           // "no data yet" overlay
+  lv_obj_t *staleChip;                    // "as of Xm ago" — top-right, shown when effAge > 600s
 };
 static LimitScreen sClaude, sCodex;
 static lv_color_t claudeAccent, codexAccent;
@@ -127,29 +128,47 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
 
   s.na = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "no data yet");
   lv_obj_align(s.na, LV_ALIGN_CENTER, 0, 0);
+
+  s.staleChip = mkLabel(tile, &lv_font_montserrat_14, COL_WARN, "");
+  lv_obj_align(s.staleChip, LV_ALIGN_TOP_RIGHT, -12, 14);
+  setHidden(s.staleChip, true);
 }
 
+// effAge: this section's ageSec-at-fetch plus wall-clock elapsed since receipt (Finding 5) — the
+// same quantity screen_claude_apply/screen_codex_apply compute per-section (claudeLimitsAge /
+// codexAge) and pass through, since applyLimitScreen is shared by both.
 static void applyLimitScreen(LimitScreen &s, bool has, const Window &prim, const Window &sec,
-                             const UsageData &u, int32_t elapsedSec) {
+                             const UsageData &u, int32_t elapsedSec, int32_t effAge) {
   if (!has) { setHidden(s.na, false); return; }
   setHidden(s.na, true);
+  bool stale = effAge > 600;
+  if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(s.staleChip, "as of %s ago", ageBuf); }
+  setHidden(s.staleChip, !stale);
   char buf[32];
   if (prim.has) {
     lv_arc_set_value(s.arc, (int)prim.pct);
     lv_label_set_text_fmt(s.arcPct, "%d%%", (int)prim.pct);
     if (prim.hasReset) {
-      char cd[16]; fmt_countdown(prim.resetsInSec - elapsedSec, cd, sizeof(cd));
-      snprintf(buf, sizeof(buf), "resets in %s", cd);
-      lv_label_set_text(s.arcSub, buf);
+      int32_t remaining = prim.resetsInSec - elapsedSec;
+      if (remaining <= 0 && stale) lv_label_set_text(s.arcSub, "resets: --");
+      else {
+        char cd[16]; fmt_countdown(remaining, cd, sizeof(cd));
+        snprintf(buf, sizeof(buf), "resets in %s", cd);
+        lv_label_set_text(s.arcSub, buf);
+      }
     } else lv_label_set_text(s.arcSub, "");
   } else { lv_arc_set_value(s.arc, 0); lv_label_set_text(s.arcPct, "--"); }
   if (sec.has) {
     lv_bar_set_value(s.bar, (int)sec.pct, LV_ANIM_ON);
     lv_label_set_text_fmt(s.barPct, "%d%%", (int)sec.pct);
     if (sec.hasReset) {
-      char cd[16]; fmt_countdown(sec.resetsInSec - elapsedSec, cd, sizeof(cd));
-      snprintf(buf, sizeof(buf), "resets in %s", cd);
-      lv_label_set_text(s.barSub, buf);
+      int32_t remaining = sec.resetsInSec - elapsedSec;
+      if (remaining <= 0 && stale) lv_label_set_text(s.barSub, "resets: --");
+      else {
+        char cd[16]; fmt_countdown(remaining, cd, sizeof(cd));
+        snprintf(buf, sizeof(buf), "resets in %s", cd);
+        lv_label_set_text(s.barSub, buf);
+      }
     } else lv_label_set_text(s.barSub, "");
   } else { lv_bar_set_value(s.bar, 0, LV_ANIM_OFF); lv_label_set_text(s.barPct, "--"); }
 }
@@ -172,18 +191,47 @@ void screen_claude_build(lv_obj_t *tile) {
 }
 void screen_claude_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
-  applyLimitScreen(sClaude, u.hasClaudeLimits, u.session, u.weekly, u, el);
+  int32_t effAge = u.claudeLimitsAge + el;
+  applyLimitScreen(sClaude, u.hasClaudeLimits, u.session, u.weekly, u, el, effAge);
+
+  // Findings 6+8 (round 3): verified against the COMPILED font line-heights (read straight from
+  // the .c font files: montserrat_14 line_height=16, montserrat_16 line_height=18 — not
+  // estimated) that the round-2 Weekly-identical geometry only actually clears the swipe-down
+  // hint for 0-1 extras; 2 already collides. So: extraCount 0-1 keeps the round-2 look unchanged;
+  // extraCount 2-3 switches every shown row to a compact geometry AND hides the hint (Tokens is
+  // still reachable by swipe either way — the hint is purely decluttering, not a functional gate).
+  // The exact y-map used here (all margins re-verified >=4px against real line-heights):
+  //   compact row i: label/pct top = 320+30*i (h16) ; bar top = label_top+16, bar h10
+  //     2 extras -> rows end at label[320,336]/bar[336,346], label[350,366]/bar[366,376]
+  //     3 extras -> adds          label[380,396]/bar[396,406]
+  //   credits (compact) top: 2-extra case 384 (offset -30), 3-extra case 410 (offset -4)
+  //   credits (0-1 extra, unchanged from round 1): top 406 (offset -8)
+  //   tile is 430px tall (480 - 32 status bar - 18 dots); every junction above lands at exactly
+  //   or comfortably over a 4px gap - see round-3 report for the full margin table.
+  bool compact = u.hasClaudeLimits && u.extraCount >= 2;
+  setHidden(claudeHint, compact);
   for (int i = 0; i < 3; i++) {
     bool show = u.hasClaudeLimits && i < u.extraCount;
     setHidden(sClaude.extraRows[i], !show);
     setHidden(sClaude.extraPcts[i], !show);
     setHidden(sClaude.extraBars[i], !show);
-    if (show) {
-      lv_label_set_text_fmt(sClaude.extraRows[i], "Weekly • %s", u.extras[i].label);
-      lv_label_set_text_fmt(sClaude.extraPcts[i], "%d%%", (int)u.extras[i].w.pct);
-      lv_bar_set_value(sClaude.extraBars[i], (int)u.extras[i].w.pct, LV_ANIM_ON);
-    }
+    if (!show) continue;
+    int y = compact ? (320 + i * 30) : (330 + i * 46);
+    const lv_font_t *f = compact ? &lv_font_montserrat_14 : &lv_font_montserrat_16;
+    lv_obj_set_style_text_font(sClaude.extraRows[i], f, 0);
+    lv_obj_set_style_text_font(sClaude.extraPcts[i], f, 0);
+    lv_obj_align(sClaude.extraRows[i], LV_ALIGN_TOP_LEFT, 36, y);
+    lv_obj_align(sClaude.extraPcts[i], LV_ALIGN_TOP_RIGHT, -36, y);
+    lv_obj_set_size(sClaude.extraBars[i], 408, compact ? 10 : 14);
+    lv_obj_align(sClaude.extraBars[i], LV_ALIGN_TOP_MID, 0, y + (compact ? 16 : 24));
+    lv_label_set_text_fmt(sClaude.extraRows[i], "Weekly - %s", u.extras[i].label);
+    lv_label_set_text_fmt(sClaude.extraPcts[i], "%d%%", (int)u.extras[i].w.pct);
+    lv_bar_set_value(sClaude.extraBars[i], (int)u.extras[i].w.pct, LV_ANIM_ON);
   }
+  int creditsOff = -8;
+  if (u.extraCount == 2) creditsOff = -30;
+  else if (u.extraCount == 3) creditsOff = -4;
+  lv_obj_align(claudeCredits, LV_ALIGN_BOTTOM_MID, 0, creditsOff);
   setHidden(claudeCredits, !u.hasCredits);
   if (u.hasCredits) {
     char c[16]; fmt_cost(u.creditsUsd, c, sizeof(c));
@@ -195,12 +243,13 @@ void screen_claude_apply(const UsageData &u) {
 void screen_codex_build(lv_obj_t *tile) { codexAccent = COL_CODEX; buildLimitScreen(sCodex, tile, "Codex", COL_CODEX, "5-hour window", "Weekly"); }
 void screen_codex_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
-  applyLimitScreen(sCodex, u.hasCodex, u.cxFive, u.cxWeekly, u, el);
-  if (u.hasCodex && u.cxPlan[0]) lv_label_set_text_fmt(sCodex.title, "Codex · %s", u.cxPlan);
+  int32_t effAge = u.codexAge + el;
+  applyLimitScreen(sCodex, u.hasCodex, u.cxFive, u.cxWeekly, u, el, effAge);
+  if (u.hasCodex && u.cxPlan[0]) lv_label_set_text_fmt(sCodex.title, "Codex - %s", u.cxPlan);
 }
 
 // ---------- Copilot ----------
-static lv_obj_t *cpBig, *cpBar, *cpPctL, *cpReset, *cpPlanL, *cpNa, *cpTile;
+static lv_obj_t *cpBig, *cpBar, *cpPctL, *cpReset, *cpPlanL, *cpNa, *cpTile, *cpStale;
 void screen_copilot_build(lv_obj_t *tile) {
   cpTile = tile;
   lv_obj_set_style_bg_color(tile, COL_BG, 0); lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
@@ -225,16 +274,34 @@ void screen_copilot_build(lv_obj_t *tile) {
   lv_obj_align(cpPlanL, LV_ALIGN_BOTTOM_MID, 0, -46);
   cpNa = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "no data yet");
   lv_obj_align(cpNa, LV_ALIGN_CENTER, 0, 0);
+  cpStale = mkLabel(tile, &lv_font_montserrat_14, COL_WARN, "");
+  lv_obj_align(cpStale, LV_ALIGN_TOP_RIGHT, -12, 14);
+  setHidden(cpStale, true);
 }
 void screen_copilot_apply(const UsageData &u) {
   if (!u.hasCopilot) { setHidden(cpNa, false); return; }
   setHidden(cpNa, true);
+  int32_t effAge = u.copilotAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
+  bool stale = effAge > 600;
+  if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(cpStale, "as of %s ago", ageBuf); }
+  setHidden(cpStale, !stale);
   char a[20], b[20];
   fmt_compact(u.cpUsed, a, sizeof(a));
   if (u.cpIncluded > 0) { fmt_compact(u.cpIncluded, b, sizeof(b)); lv_label_set_text_fmt(cpBig, "%s / %s", a, b); }
   else lv_label_set_text_fmt(cpBig, "%s (unlimited)", a);
   lv_bar_set_value(cpBar, (int)u.cpPct, LV_ANIM_ON);
-  lv_label_set_text_fmt(cpPctL, "%.1f%% used", u.cpPct);
+  // Finding 4: lv_label_set_text_fmt() runs through LVGL's builtin vsnprintf, whose %f support is
+  // gated on LV_USE_FLOAT (checked stdlib/builtin/lv_sprintf_builtin.c: `#define
+  // PRINTF_DISABLE_SUPPORT_FLOAT (!LV_USE_FLOAT)`, not the LV_SPRINTF_USE_FLOAT name floated in
+  // the finding — that macro doesn't exist in this LVGL version's builtin sprintf). This project's
+  // lv_conf.h already has LV_USE_FLOAT 0 (set for unrelated reasons — lv_value_precise_t/matrix
+  // support — not something to flip just for this one string). So: format with the real C
+  // library snprintf (which model.cpp's fmt_cost/fmt_compact already rely on successfully) into a
+  // local buffer, then set the literal text — bypasses LVGL's limited-vocabulary formatter
+  // entirely instead of depending on its float support.
+  char pctBuf[24];
+  snprintf(pctBuf, sizeof(pctBuf), "%.1f%% used", u.cpPct);
+  lv_label_set_text(cpPctL, pctBuf);
   if (u.cpHasReset) {
     char cd[16];
     fmt_countdown(u.cpResetsInSec - (int32_t)((millis() - u.receivedAtMs) / 1000), cd, sizeof(cd));
@@ -244,7 +311,7 @@ void screen_copilot_apply(const UsageData &u) {
 }
 
 // ---------- Claude tokens ----------
-static lv_obj_t *tkBig, *tkRows[3], *tkRowVals[3], *tkCost, *tkNa, *tkBreak;
+static lv_obj_t *tkBig, *tkRows[3], *tkRowVals[3], *tkCost, *tkNa, *tkBreak, *tkStale;
 void screen_tokens_build(lv_obj_t *tile) {
   lv_obj_set_style_bg_color(tile, COL_BG, 0); lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
   lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
@@ -274,22 +341,29 @@ void screen_tokens_build(lv_obj_t *tile) {
   lv_obj_align(tkCost, LV_ALIGN_BOTTOM_MID, 0, -46);
   tkNa = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "no data yet");
   lv_obj_align(tkNa, LV_ALIGN_CENTER, 0, 0);
+  tkStale = mkLabel(tile, &lv_font_montserrat_14, COL_WARN, "");
+  lv_obj_align(tkStale, LV_ALIGN_TOP_RIGHT, -12, 14);
+  setHidden(tkStale, true);
 }
 void screen_tokens_apply(const UsageData &u) {
   if (!u.hasTokens) { setHidden(tkNa, false); return; }
   setHidden(tkNa, true);
+  int32_t effAge = u.tokensAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
+  bool stale = effAge > 600;
+  if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(tkStale, "as of %s ago", ageBuf); }
+  setHidden(tkStale, !stale);
   char b1[20], b2[20], b3[20];
   fmt_compact(u.today.total, b1, sizeof(b1));
   lv_label_set_text(tkBig, b1);
   fmt_compact(u.today.in + u.today.out, b2, sizeof(b2));
   fmt_compact(u.today.cacheRead + u.today.cacheWrite, b3, sizeof(b3));
-  lv_label_set_text_fmt(tkBreak, "%s in+out • %s cache", b2, b3);
+  lv_label_set_text_fmt(tkBreak, "%s in+out - %s cache", b2, b3);
   const TokenBucket *rows[3] = {&u.week, &u.month, &u.allTime};
   for (int i = 0; i < 3; i++) { fmt_compact(rows[i]->total, b1, sizeof(b1)); lv_label_set_text(tkRowVals[i], b1); }
   char c1[16], c2[16];
   fmt_cost(u.costMonth, c1, sizeof(c1));
   fmt_cost(u.costAllTime, c2, sizeof(c2));
-  lv_label_set_text_fmt(tkCost, "est. value: %s this month • %s all time", c1, c2);
+  lv_label_set_text_fmt(tkCost, "est. value: %s this month - %s all time", c1, c2);
 }
 
 static UsageData lastApplied;
