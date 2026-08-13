@@ -18,11 +18,18 @@ void display_init() {
       1 /* vsync_polarity */, 10 /* vsync_front_porch */, 8 /* vsync_pulse_width */, 20 /* vsync_back_porch */,
       1 /* pclk_active_neg */, 12000000 /* prefer_speed: 12MHz, matches the ESPHome community config for this panel */,
       false /* useBigEndian */, 0 /* de_idle_high */, 0 /* pclk_idle_high */,
-      480 * 10 /* bounce_buffer_size_px: fix-ladder rung 1 — a small internal-SRAM bounce
+      480 * 20 /* bounce_buffer_size_px: fix-ladder rung 1 — a small internal-SRAM bounce
                   buffer the esp_lcd_rgb driver DMA-refills from the PSRAM framebuffer, so the
                   panel's continuous pixel-clock DMA stops contending directly with PSRAM against
                   LVGL's own render/flush traffic. Full-UI redraw load exposed this; M3's plain
-                  test-pattern load didn't. Paired with rung 2 in lvgl_port.cpp (below). */);
+                  test-pattern load didn't. Paired with rung 2 in lvgl_port.cpp (below).
+                  Task 8 fix round 2, Finding A: WiFi scan radio bursts (esp32-s3 WiFi/LCD
+                  coexistence) proved able to starve the DMA refill hard enough at 480*10 (10
+                  lines) to visibly glitch the panel specifically while "Add network" is
+                  scanning — raised to 480*20 (20 lines) to give the refill more slack to ride
+                  through a radio burst. If esp_lcd_new_rgb_panel's internal-DMA allocation can't
+                  satisfy 480*20 (this would abort via ESP_ERROR_CHECK very early in boot, visible
+                  on serial as a panel-init failure, not a silent hang), fall back to 480*16. */);
       // Fix-ladder rung 1 applied above (pclk_active_neg=1, prefer_speed=12MHz, bounce buffer) to
       // address RGB-panel/PSRAM-contention glitching seen on hardware under real UI redraw load.
       // Rung 3 (only if still glitchy after rungs 1+2): drop prefer_speed to 10000000.

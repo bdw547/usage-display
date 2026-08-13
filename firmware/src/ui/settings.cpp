@@ -14,6 +14,7 @@ static void rebuildSavedList();
 
 // ---- password keyboard modal ----
 static void openKeyboard(const String &ssid) {
+  if (kbModal) return; // Finding B guard: no double-modal stacking from a double-tap
   pendingSsid = ssid;
   kbModal = lv_obj_create(lv_layer_top());
   lv_obj_set_size(kbModal, SCREEN_W, SCREEN_H);
@@ -22,6 +23,16 @@ static void openKeyboard(const String &ssid) {
   lv_label_set_text_fmt(title, "Password for %s", ssid.c_str());
   lv_obj_set_style_text_color(title, COL_TEXT, 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
+  // Finding B: explicit, visible way out (previously only READY/CANCEL on the keyboard itself
+  // closed this modal, and the user reported no way to escape it). Same style/size as the scan
+  // modal's own close button below (Finding C: >=44x44 touch target).
+  lv_obj_t *close = lv_button_create(kbModal);
+  lv_obj_set_size(close, 44, 44);
+  lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -10, 8);
+  lv_obj_t *cx = lv_label_create(close);
+  lv_label_set_text(cx, LV_SYMBOL_CLOSE);
+  lv_obj_center(cx);
+  lv_obj_add_event_cb(close, [](lv_event_t *) { lv_obj_delete(kbModal); kbModal = nullptr; }, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *ta = lv_textarea_create(kbModal);
   lv_textarea_set_one_line(ta, true);
   lv_textarea_set_password_mode(ta, true);
@@ -44,10 +55,12 @@ static void openKeyboard(const String &ssid) {
       lv_obj_delete(kbModal); kbModal = nullptr;
     }
   }, LV_EVENT_ALL, nullptr);
+  lv_obj_move_foreground(kbModal); // Finding B: defense in depth, on top of the one-modal-at-a-time restructure below
 }
 
 // ---- scan modal ----
 static void openScan() {
+  if (scanModal) return; // Finding B guard: no double-modal stacking from a double-tap
   wifi_mgr_request_scan();
   scanModal = lv_obj_create(lv_layer_top());
   lv_obj_set_size(scanModal, SCREEN_W, SCREEN_H);
@@ -57,9 +70,11 @@ static void openScan() {
   lv_obj_set_style_text_color(title, COL_TEXT, 0);
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
   lv_obj_t *close = lv_button_create(scanModal);
+  lv_obj_set_size(close, 44, 44); // Finding C: >=44x44 touch target (was content-sized, easy to miss)
   lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -10, 8);
   lv_obj_t *x = lv_label_create(close);
   lv_label_set_text(x, LV_SYMBOL_CLOSE);
+  lv_obj_center(x);
   lv_obj_add_event_cb(close, [](lv_event_t *) { lv_obj_delete(scanModal); scanModal = nullptr; }, LV_EVENT_CLICKED, nullptr);
   scanSpinner = lv_spinner_create(scanModal);
   lv_obj_set_size(scanSpinner, 60, 60);
@@ -89,7 +104,17 @@ static void onScanResults(std::vector<std::pair<String, int>> &nets) {
     }, LV_EVENT_DELETE, nullptr);
     lv_obj_add_event_cb(btn, [](lv_event_t *e) {
       String *ssid = (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-      if (ssid) openKeyboard(*ssid); // NO delete here — the DELETE callback owns freeing
+      if (!ssid) return;
+      openKeyboard(*ssid); // copies into pendingSsid by value; scanModal/btn still alive here
+      // Finding B: one-modal-at-a-time — close the scan modal now that the keyboard is up.
+      // MUST be the async variant: this deletes scanModal, the ANCESTOR of btn (whose CLICKED
+      // event is still being dispatched right now, mid-callback). lv_obj_delete_async() defers
+      // the actual teardown (and btn's own LV_EVENT_DELETE, which frees this ssid String) to run
+      // later via lv_async_call(), entirely outside this call stack, rather than synchronously
+      // unwinding through an in-flight ancestor delete triggered partway through handling it.
+      // NO manual delete of ssid here either way — the DELETE callback owns freeing it.
+      lv_obj_delete_async(scanModal);
+      scanModal = nullptr;
     }, LV_EVENT_CLICKED, nullptr);
   }
 }
