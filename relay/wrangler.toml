@@ -1,0 +1,10 @@
+name = "usage-relay"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+
+[[kv_namespaces]]
+binding = "USAGE_KV"
+id = "PLACEHOLDER_FILLED_IN_TASK_4"
+
+[observability]
+enabled = true
