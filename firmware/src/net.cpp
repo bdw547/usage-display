@@ -19,6 +19,9 @@ static const uint32_t POLL_MS = 20000;
 static void parseWindow(JsonVariantConst v, Window &w) {
   w.has = !v.isNull();
   if (!w.has) return;
+  // F7: the window object can exist with a null pct (merge.js emits `pct: null` rather than
+  // dropping the window). Track that separately instead of letting `| 0.0f` invent a 0% reading.
+  w.hasPct = !v["pct"].isNull();
   w.pct = v["pct"] | 0.0f;
   w.hasReset = !v["resetsInSec"].isNull();
   w.resetsInSec = v["resetsInSec"] | 0;
@@ -79,9 +82,18 @@ static bool parseSummary(const String &body, UsageData &u) {
   if (!cp.isNull()) {
     u.hasCopilot = true;
     u.copilotAge = cp["ageSec"] | 0;
-    u.cpUsed = cp["used"] | 0LL;
-    u.cpIncluded = cp["included"] | 0LL;
-    u.cpPct = cp["pctUsed"] | 0.0f;
+    // F7: `used`, `included` and `pctUsed` are all forwarded as explicit nulls by the relay when
+    // the vendor omits them (merge.js `cp.used ?? null`). `included: null` is doubly ambiguous —
+    // the collector uses it BOTH for a genuinely unlimited plan and for "the entitlement field was
+    // missing" — so the firmware must not translate it into "(unlimited)". Presence flags here,
+    // rendering decisions in screens.cpp.
+    JsonVariantConst cpUsedV = cp["used"], cpInclV = cp["included"], cpPctV = cp["pctUsed"];
+    u.cpHasUsed = !cpUsedV.isNull();
+    u.cpUsed = u.cpHasUsed ? (cpUsedV | 0LL) : -1LL;
+    u.cpHasIncluded = !cpInclV.isNull();
+    u.cpIncluded = u.cpHasIncluded ? (cpInclV | 0LL) : -1LL;
+    u.cpHasPct = !cpPctV.isNull();
+    u.cpPct = cpPctV | 0.0f;
     u.cpHasReset = !cp["resetsInSec"].isNull();
     u.cpResetsInSec = cp["resetsInSec"] | 0;
     snprintf(u.cpPlan, sizeof(u.cpPlan), "%s", (const char *)(cp["plan"] | ""));
@@ -89,7 +101,16 @@ static bool parseSummary(const String &body, UsageData &u) {
   return true;
 }
 
+// F10(a): stagger the boot load. The RGB panel's bounce-buffer refill has to win a race against
+// PSRAM contention every line; during the boot burst it was competing with WiFi association, the
+// first TLS handshake (a 16KB+ mbedTLS allocation and a lot of crypto) and the first full-screen
+// LVGL render ALL at once — the underrun that desyncs scanout (the user's "header at the bottom"
+// power-cycle repro). Letting the UI and WiFi settle first costs one poll interval of latency at
+// boot and nothing at all afterwards.
+static const uint32_t BOOT_STAGGER_MS = 2500;
+
 static void netTask(void *) {
+  vTaskDelay(pdMS_TO_TICKS(BOOT_STAGGER_MS));
   for (;;) {
     if (wifi_mgr_state() != WifiState::CONNECTED) {
       if (status != NetStatus::NEVER) status = NetStatus::WIFI_DOWN;

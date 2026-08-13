@@ -137,17 +137,43 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
 // effAge: this section's ageSec-at-fetch plus wall-clock elapsed since receipt (Finding 5) — the
 // same quantity screen_claude_apply/screen_codex_apply compute per-section (claudeLimitsAge /
 // codexAge) and pass through, since applyLimitScreen is shared by both.
+// Final-review F8: a section going null used to just show "no data yet" ON TOP of the previous
+// payload's still-populated arc, bars, percentages and "as of Xm ago" chip — the display asserting
+// "no data" and a specific stale percentage at the same time. This is reachable in normal
+// operation (a collector restart publishes claude.limits: null until its first vendor poll lands).
+// Blank every value-bearing widget before the overlay goes up.
+static void blankLimitScreen(LimitScreen &s) {
+  lv_arc_set_value(s.arc, 0);
+  lv_label_set_text(s.arcPct, "--");
+  lv_label_set_text(s.arcSub, "");
+  lv_bar_set_value(s.bar, 0, LV_ANIM_OFF);
+  lv_label_set_text(s.barPct, "--");
+  lv_label_set_text(s.barSub, "");
+  setHidden(s.staleChip, true);
+  for (int i = 0; i < 3; i++) {
+    setHidden(s.extraRows[i], true);
+    setHidden(s.extraPcts[i], true);
+    setHidden(s.extraBars[i], true);
+  }
+}
+
 static void applyLimitScreen(LimitScreen &s, bool has, const Window &prim, const Window &sec,
                              const UsageData &u, int32_t elapsedSec, int32_t effAge) {
-  if (!has) { setHidden(s.na, false); return; }
+  if (!has) { blankLimitScreen(s); setHidden(s.na, false); return; }
   setHidden(s.na, true);
   bool stale = effAge > 600;
   if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(s.staleChip, "as of %s ago", ageBuf); }
   setHidden(s.staleChip, !stale);
   char buf[32];
   if (prim.has) {
-    lv_arc_set_value(s.arc, (int)prim.pct);
-    lv_label_set_text_fmt(s.arcPct, "%d%%", (int)prim.pct);
+    // F7: a present window with a null pct means "unknown", not "0%".
+    if (prim.hasPct) {
+      lv_arc_set_value(s.arc, (int)prim.pct);
+      lv_label_set_text_fmt(s.arcPct, "%d%%", (int)prim.pct);
+    } else {
+      lv_arc_set_value(s.arc, 0);
+      lv_label_set_text(s.arcPct, "--");
+    }
     if (prim.hasReset) {
       int32_t remaining = prim.resetsInSec - elapsedSec;
       if (remaining <= 0 && stale) lv_label_set_text(s.arcSub, "resets: --");
@@ -159,8 +185,13 @@ static void applyLimitScreen(LimitScreen &s, bool has, const Window &prim, const
     } else lv_label_set_text(s.arcSub, "");
   } else { lv_arc_set_value(s.arc, 0); lv_label_set_text(s.arcPct, "--"); }
   if (sec.has) {
-    lv_bar_set_value(s.bar, (int)sec.pct, LV_ANIM_ON);
-    lv_label_set_text_fmt(s.barPct, "%d%%", (int)sec.pct);
+    if (sec.hasPct) { // F7, same rule as the primary window above
+      lv_bar_set_value(s.bar, (int)sec.pct, LV_ANIM_ON);
+      lv_label_set_text_fmt(s.barPct, "%d%%", (int)sec.pct);
+    } else {
+      lv_bar_set_value(s.bar, 0, LV_ANIM_OFF);
+      lv_label_set_text(s.barPct, "--");
+    }
     if (sec.hasReset) {
       int32_t remaining = sec.resetsInSec - elapsedSec;
       if (remaining <= 0 && stale) lv_label_set_text(s.barSub, "resets: --");
@@ -225,8 +256,13 @@ void screen_claude_apply(const UsageData &u) {
     lv_obj_set_size(sClaude.extraBars[i], 408, compact ? 10 : 14);
     lv_obj_align(sClaude.extraBars[i], LV_ALIGN_TOP_MID, 0, y + (compact ? 16 : 24));
     lv_label_set_text_fmt(sClaude.extraRows[i], "Weekly - %s", u.extras[i].label);
-    lv_label_set_text_fmt(sClaude.extraPcts[i], "%d%%", (int)u.extras[i].w.pct);
-    lv_bar_set_value(sClaude.extraBars[i], (int)u.extras[i].w.pct, LV_ANIM_ON);
+    if (u.extras[i].w.hasPct) { // F7
+      lv_label_set_text_fmt(sClaude.extraPcts[i], "%d%%", (int)u.extras[i].w.pct);
+      lv_bar_set_value(sClaude.extraBars[i], (int)u.extras[i].w.pct, LV_ANIM_ON);
+    } else {
+      lv_label_set_text(sClaude.extraPcts[i], "--");
+      lv_bar_set_value(sClaude.extraBars[i], 0, LV_ANIM_OFF);
+    }
   }
   int creditsOff = -8;
   if (u.extraCount == 2) creditsOff = -30;
@@ -245,7 +281,9 @@ void screen_codex_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
   int32_t effAge = u.codexAge + el;
   applyLimitScreen(sCodex, u.hasCodex, u.cxFive, u.cxWeekly, u, el, effAge);
+  // F8: the plan suffix is part of the stale payload too — drop it when the section goes null.
   if (u.hasCodex && u.cxPlan[0]) lv_label_set_text_fmt(sCodex.title, "Codex - %s", u.cxPlan);
+  else lv_label_set_text(sCodex.title, "Codex");
 }
 
 // ---------- Copilot ----------
@@ -279,17 +317,48 @@ void screen_copilot_build(lv_obj_t *tile) {
   setHidden(cpStale, true);
 }
 void screen_copilot_apply(const UsageData &u) {
-  if (!u.hasCopilot) { setHidden(cpNa, false); return; }
+  if (!u.hasCopilot) { // F8: blank the stale gauge before claiming there's no data
+    lv_label_set_text(cpBig, "--");
+    lv_bar_set_value(cpBar, 0, LV_ANIM_OFF);
+    setHidden(cpBar, false);
+    lv_label_set_text(cpPctL, "--");
+    lv_label_set_text(cpReset, "");
+    lv_label_set_text(cpPlanL, "");
+    setHidden(cpStale, true);
+    setHidden(cpNa, false);
+    return;
+  }
   setHidden(cpNa, true);
   int32_t effAge = u.copilotAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
   bool stale = effAge > 600;
   if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(cpStale, "as of %s ago", ageBuf); }
   setHidden(cpStale, !stale);
+  // F7 (honest nulls). Three separate unknowns, three separate renders:
+  //   used == null      -> "--" (spec §13: "render 'n/a' rather than fake zeros"), never 0.
+  //   included == null  -> just the used count, with NO "/ total" and NO "(unlimited)". The
+  //                        collector writes null both for a genuinely unlimited plan AND for a
+  //                        metered plan whose `entitlement` field the API stopped returning, so
+  //                        printing "(unlimited)" on a metered plan is the most misleading answer
+  //                        this screen can give. Nothing downstream distinguishes the two, so the
+  //                        display says only what it actually knows.
+  //   pctUsed unknown or no denominator -> hide the bar entirely instead of drawing a reassuring
+  //                        0% (the collector force-writes pctUsed: 0 for the unlimited case).
   char a[20], b[20];
-  fmt_compact(u.cpUsed, a, sizeof(a));
-  if (u.cpIncluded > 0) { fmt_compact(u.cpIncluded, b, sizeof(b)); lv_label_set_text_fmt(cpBig, "%s / %s", a, b); }
-  else lv_label_set_text_fmt(cpBig, "%s (unlimited)", a);
-  lv_bar_set_value(cpBar, (int)u.cpPct, LV_ANIM_ON);
+  if (!u.cpHasUsed) {
+    lv_label_set_text(cpBig, "--");
+  } else {
+    fmt_compact(u.cpUsed, a, sizeof(a));
+    if (u.cpHasIncluded && u.cpIncluded > 0) {
+      fmt_compact(u.cpIncluded, b, sizeof(b));
+      lv_label_set_text_fmt(cpBig, "%s / %s", a, b);
+    } else {
+      lv_label_set_text(cpBig, a);
+    }
+  }
+  bool pctMeaningful = u.cpHasPct && u.cpHasIncluded && u.cpIncluded > 0;
+  setHidden(cpBar, !pctMeaningful);
+  if (pctMeaningful) lv_bar_set_value(cpBar, (int)u.cpPct, LV_ANIM_ON);
+  else lv_bar_set_value(cpBar, 0, LV_ANIM_OFF);
   // Finding 4: lv_label_set_text_fmt() runs through LVGL's builtin vsnprintf, whose %f support is
   // gated on LV_USE_FLOAT (checked stdlib/builtin/lv_sprintf_builtin.c: `#define
   // PRINTF_DISABLE_SUPPORT_FLOAT (!LV_USE_FLOAT)`, not the LV_SPRINTF_USE_FLOAT name floated in
@@ -299,9 +368,17 @@ void screen_copilot_apply(const UsageData &u) {
   // library snprintf (which model.cpp's fmt_cost/fmt_compact already rely on successfully) into a
   // local buffer, then set the literal text — bypasses LVGL's limited-vocabulary formatter
   // entirely instead of depending on its float support.
-  char pctBuf[24];
-  snprintf(pctBuf, sizeof(pctBuf), "%.1f%% used", u.cpPct);
-  lv_label_set_text(cpPctL, pctBuf);
+  if (pctMeaningful) {
+    char pctBuf[24];
+    snprintf(pctBuf, sizeof(pctBuf), "%.1f%% used", u.cpPct);
+    lv_label_set_text(cpPctL, pctBuf);
+  } else if (u.cpHasUsed) {
+    lv_label_set_text(cpPctL, "quota total not reported"); // F7: no denominator, so no percentage
+  } else {
+    lv_label_set_text(cpPctL, "--");
+  }
+  // F8: a section can arrive without a reset window after one that had it — clear, don't keep.
+  if (!u.cpHasReset) lv_label_set_text(cpReset, "");
   if (u.cpHasReset) {
     // Mirrors applyLimitScreen's stale-aware override (Task 9 cleanup item 1): once the reset
     // window itself has elapsed AND the section is stale, a countdown would just be a frozen/wrong
@@ -315,6 +392,7 @@ void screen_copilot_apply(const UsageData &u) {
     }
   }
   if (u.cpPlan[0]) lv_label_set_text_fmt(cpPlanL, "plan: %s", u.cpPlan);
+  else lv_label_set_text(cpPlanL, ""); // F8
 }
 
 // ---------- Claude tokens ----------
@@ -353,7 +431,15 @@ void screen_tokens_build(lv_obj_t *tile) {
   setHidden(tkStale, true);
 }
 void screen_tokens_apply(const UsageData &u) {
-  if (!u.hasTokens) { setHidden(tkNa, false); return; }
+  if (!u.hasTokens) { // F8: blank the stale numbers before claiming there's no data
+    lv_label_set_text(tkBig, "--");
+    lv_label_set_text(tkBreak, "");
+    for (int i = 0; i < 3; i++) lv_label_set_text(tkRowVals[i], "--");
+    lv_label_set_text(tkCost, "");
+    setHidden(tkStale, true);
+    setHidden(tkNa, false);
+    return;
+  }
   setHidden(tkNa, true);
   int32_t effAge = u.tokensAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
   bool stale = effAge > 600;

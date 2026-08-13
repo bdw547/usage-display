@@ -3,7 +3,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
-struct Window { bool has = false; float pct = 0; int32_t resetsInSec = 0; bool hasReset = false; };
+// Final-review F7 ("honest nulls"): presence is tracked per FIELD, not just per section. The relay
+// emits `pct: null` inside an otherwise-present window object (merge.js relWindow) and
+// `used/included/pctUsed: null` inside an otherwise-present copilot quota; collapsing those to 0
+// renders a reassuring "0%" for "we don't know", which is the worst answer a quota display can give.
+struct Window { bool has = false; bool hasPct = false; float pct = 0; int32_t resetsInSec = 0; bool hasReset = false; };
 struct TokenBucket { int64_t in = 0, out = 0, cacheRead = 0, cacheWrite = 0, total = 0; };
 
 struct UsageData {
@@ -21,9 +25,11 @@ struct UsageData {
   float costMonth = 0, costAllTime = 0;
   // codex
   bool hasCodex = false; int32_t codexAge = 0; Window cxFive, cxWeekly; char cxPlan[16] = "";
-  // copilot
+  // copilot — cpUsed/cpIncluded carry -1 when the vendor/relay sent null (see F7 above); the
+  // cpHas* flags are the authority, the sentinel just keeps a stray read from looking plausible.
   bool hasCopilot = false; int32_t copilotAge = 0;
-  int64_t cpUsed = 0, cpIncluded = 0; float cpPct = 0; int32_t cpResetsInSec = 0; bool cpHasReset = false; char cpPlan[16] = "";
+  bool cpHasUsed = false, cpHasIncluded = false, cpHasPct = false;
+  int64_t cpUsed = -1, cpIncluded = -1; float cpPct = 0; int32_t cpResetsInSec = 0; bool cpHasReset = false; char cpPlan[16] = "";
 };
 
 // Formatting helpers (pure; shared by all screens)

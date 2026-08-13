@@ -69,7 +69,14 @@
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
     /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
-    #define LV_MEM_SIZE (48 * 1024U)          /**< [bytes] */
+    /* Final-review F9a: raised 48K -> 64K. The 48K budget was set during M3 bring-up, before the
+     * M7 settings screen existed. Peak occupancy is the scan modal (list of network rows) plus the
+     * ~35-button lv_keyboard; exhausting the fixed, non-expandable pool trips LV_ASSERT_MALLOC ->
+     * LV_ASSERT_HANDLER, which used to be a silent while(1) (the user-reported "textbox but no
+     * keyboard, device frozen" repro). Paired with the settings.cpp restructure that frees the
+     * scan list BEFORE the keyboard allocates, and the 12-row scan cap (F6). The pool is a static
+     * internal-RAM array (lv_mem_core_builtin.c:82), so this costs 16K of internal heap. */
+    #define LV_MEM_SIZE (64 * 1024U)          /**< [bytes] */
 
     /** Size of the memory expand for `lv_malloc()` in bytes */
     #define LV_MEM_POOL_EXPAND_SIZE 0
@@ -457,7 +464,10 @@
  *-----------*/
 
 /** Enable log module */
-#define LV_USE_LOG 0
+/* Final-review F9a: was 0, which meant an allocation failure (and every other LVGL assert) hit the
+ * halt handler with zero serial output — nothing to diagnose the frozen-keyboard repro with. WARN
+ * level keeps the noise down while still surfacing "Couldn't allocate memory" and friends. */
+#define LV_USE_LOG 1
 #if LV_USE_LOG
     /** Set value to one of the following levels of logging detail:
      *  - LV_LOG_LEVEL_TRACE    Log detailed information.
@@ -470,7 +480,9 @@
 
     /** - 1: Print log with 'printf';
      *  - 0: User needs to register a callback with `lv_log_register_print_cb()`. */
-    #define LV_LOG_PRINTF 0
+    /* Final-review F9a: 1 so LVGL warnings reach the UART through the Arduino stdout redirect
+     * without needing an lv_log_register_print_cb() shim. */
+    #define LV_LOG_PRINTF 1
 
     /** Set callback to print logs.
      *  E.g `my_print`. The prototype should be `void my_print(lv_log_level_t level, const char * buf)`.
@@ -510,8 +522,13 @@
 #define LV_USE_ASSERT_OBJ           0   /**< Check the object's type and existence (e.g. not deleted). (Slow) */
 
 /** Add a custom handler when assert happens e.g. to restart MCU. */
-#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);     /**< Halt by default */
+/* Final-review F9a: was `while(1);` — a silent, watchdog-less hang with no serial output, which is
+ * exactly what the user experienced ("password box, no keyboard, frozen, restart-only"). abort()
+ * raises the ESP-IDF panic handler instead: it prints the assert message (LV_USE_LOG is on now),
+ * dumps a backtrace over UART, and reboots, so the same class of failure is diagnosable and
+ * self-recovering rather than a brick until power-cycle. */
+#define LV_ASSERT_HANDLER_INCLUDE <stdlib.h>
+#define LV_ASSERT_HANDLER abort();      /**< Panic-reboot with a backtrace instead of hanging */
 
 /*-------------
  * Debug

@@ -32,7 +32,17 @@ sitting in the horizontal carousel.
   not just a transient blip).
 - Settings page: add networks via scan + on-screen keyboard (up to 8 remembered, strongest signal
   wins on reconnect), forget with the trash icon, see live connection + relay-freshness status.
-  First boot lands here automatically and swipe is locked until a network is saved.
+  First boot lands here automatically and swipe is locked until a network is saved. The scan list
+  shows the 12 strongest networks. After 3 consecutive failed connect attempts (e.g. a mistyped
+  password) an SSID is skipped for 5 minutes so a weaker-but-working saved network gets a turn;
+  re-entering the password from Settings clears that immediately, as does a successful connect.
+- Unknown is rendered as unknown, never as zero: if the relay reports a field as null — Copilot
+  `used`/`included`/`pctUsed`, or a window's `pct` — the screen shows "--" and omits the bar
+  rather than drawing a reassuring 0%. In particular a missing Copilot quota total is never
+  labelled "(unlimited)", because the upstream data uses null for both "unlimited plan" and
+  "the entitlement field was missing". When a whole section goes null (e.g. right after a collector
+  restart), its widgets are blanked before "no data yet" appears — the display never shows "no
+  data" on top of a stale percentage.
 
 ## Data path
 Device polls `GET <RELAY_URL>/v1/summary` every 20s over TLS (roots in `include/certs.h`). All
@@ -48,5 +58,30 @@ freshness or countdown logic.
   internal DMA-capable RAM (`lvgl_port.cpp`, `heap_caps_malloc(..., MALLOC_CAP_INTERNAL |
   MALLOC_CAP_DMA)`, falling back to PSRAM only if that allocation fails). User-confirmed fixed on
   hardware; see `lvgl_port.cpp`/`display.cpp` comments if the glitch ever resurfaces.
+- **Panel timing ladder.** Two named constants at the top of `display.cpp` — `BOUNCE_LINES` and
+  `PCLK_HZ` — are the only knobs; the comment block above them carries the full ladder table.
+  Currently flashed: **Variant A (bounce 480x10 px, pclk 12MHz)**, after round-2's 480x20 bounce
+  was observed to make *steady-state* shimmer worse than round-1's 480x10. If A still shimmers at
+  idle, step to B (480x8 @ 14MHz), then C (480x10 @ 10MHz). Judge each variant on hardware: (i)
+  idle shimmer/striping across the arc and bars, (ii) glitching while "Add network" is scanning.
+  Record the winner here when the ladder terminates.
+- Two structural fixes accompany the ladder and are independent of which rung wins:
+  - **Boot stagger** (`net.cpp`, `BOOT_STAGGER_MS`): the fetch task waits 2.5s before its first
+    poll so WiFi association, the first TLS handshake and the first full LVGL render don't all
+    contend with the bounce-buffer refill at once — that pile-up is what desynced panel scanout on
+    power-up (image vertically wrapped, header at the bottom).
+  - **Post-boot scanout re-sync** (`display.cpp`, `display_boot_resync_tick()` driven from
+    `loop()`): calls `esp_lcd_rgb_panel_restart()` once, ~3s after boot. That is the canonical
+    recovery for a desynced RGB panel — redrawing cannot fix it, because the offset lives in the
+    panel's scan position, not the framebuffer. GFX 1.6.7 keeps the `esp_lcd` panel handle private
+    with no accessor, so `display.cpp` reaches it with the standard explicit-instantiation access
+    idiom (documented in place) rather than patching the generated `.pio/libdeps` tree.
+- LVGL memory: the builtin pool is a fixed, non-expandable static array sized by `LV_MEM_SIZE` in
+  `include/lv_conf.h` (64KB). Peak demand is the WiFi scan modal plus the on-screen keyboard, so
+  the settings flow deliberately never has both alive at once (the scan modal is torn down, then
+  the keyboard is built from a one-shot `lv_timer`), and the scan list is capped at the 12
+  strongest SSIDs. `LV_ASSERT_HANDLER` is `abort()` (panic + backtrace + reboot), never `while(1)` —
+  a silent hang here was the "password box appears, no keyboard, frozen" failure. `boot complete`
+  is preceded by a heap line reporting both the ESP heaps and the LVGL pool's own occupancy.
 - Device secrets are relay-scoped only: `secrets.h` holds a single read-only relay bearer token —
   no Anthropic/GitHub/Copilot credentials ever reach the firmware or the built binary.

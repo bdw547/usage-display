@@ -7,15 +7,23 @@
 #include "../model.h"
 
 static lv_obj_t *connLabel, *relayLabel, *savedList, *scanModal = nullptr;
-static lv_obj_t *scanList, *scanSpinner, *kbModal = nullptr;
+static lv_obj_t *scanList = nullptr, *scanSpinner = nullptr, *kbModal = nullptr;
+// pendingSsid is the ONLY copy of the tapped SSID that outlives the scan modal (F9b): the row
+// button's heap String dies with the modal, which is now torn down before the keyboard is built.
 static String pendingSsid;
+// Final-review F9b: set between the row tap and the deferred keyboard creation, so a second tap in
+// that ~30ms window can't queue a second keyboard (kbModal is still null during it).
+static bool kbPending = false;
+
+static const size_t MAX_SCAN_ROWS = 12; // F6: cap LVGL allocations from a dense-RF scan
 
 static void rebuildSavedList();
 
 // ---- password keyboard modal ----
+// Built from a one-shot lv_timer (see the row-click handler) so the scan list is already freed when
+// these allocations happen. Reads pendingSsid — no reference into any soon-to-die LVGL user_data.
 static void openKeyboard(const String &ssid) {
   if (kbModal) return; // Finding B guard: no double-modal stacking from a double-tap
-  pendingSsid = ssid;
   kbModal = lv_obj_create(lv_layer_top());
   lv_obj_set_size(kbModal, SCREEN_W, SCREEN_H);
   lv_obj_set_style_bg_color(kbModal, COL_BG, 0);
@@ -49,7 +57,9 @@ static void openKeyboard(const String &ssid) {
     if (lv_event_get_code(e) == LV_EVENT_READY) {
       wifi_mgr_connect_to(pendingSsid, lv_textarea_get_text(ta));
       lv_obj_delete(kbModal); kbModal = nullptr;
-      if (scanModal) { lv_obj_delete(scanModal); scanModal = nullptr; }
+      // scanModal is normally already gone (the row tap tears it down before this modal exists);
+      // this stays as a belt-and-braces cleanup for any other path into the keyboard.
+      if (scanModal) { lv_obj_delete(scanModal); scanModal = nullptr; scanList = nullptr; scanSpinner = nullptr; }
       rebuildSavedList();
     } else if (lv_event_get_code(e) == LV_EVENT_CANCEL) {
       lv_obj_delete(kbModal); kbModal = nullptr;
@@ -75,7 +85,10 @@ static void openScan() {
   lv_obj_t *x = lv_label_create(close);
   lv_label_set_text(x, LV_SYMBOL_CLOSE);
   lv_obj_center(x);
-  lv_obj_add_event_cb(close, [](lv_event_t *) { lv_obj_delete(scanModal); scanModal = nullptr; }, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(close, [](lv_event_t *) {
+    if (!scanModal) return;
+    lv_obj_delete(scanModal); scanModal = nullptr; scanList = nullptr; scanSpinner = nullptr;
+  }, LV_EVENT_CLICKED, nullptr);
   scanSpinner = lv_spinner_create(scanModal);
   lv_obj_set_size(scanSpinner, 60, 60);
   lv_obj_center(scanSpinner);
@@ -85,10 +98,27 @@ static void openScan() {
   lv_obj_set_style_bg_color(scanList, COL_BG, 0);
 }
 
+// One-shot timer body (F9b): runs ~30ms after a scan row is tapped, i.e. after lv_obj_delete_async
+// has actually torn the scan modal (list rows + their Strings + the spinner) down. The keyboard —
+// the single largest LVGL allocation in this firmware, ~35 buttons plus its matrix maps — is
+// therefore never resident at the same time as the scan list. That co-residency against a fixed
+// 48KB pool (now 64KB, F9a) is what exhausted lv_malloc and tripped the old silent-while(1)
+// LV_ASSERT_HANDLER, producing the user's "password box appears, no keyboard, device frozen".
+static void openKeyboardDeferred(lv_timer_t *) {
+  kbPending = false;
+  openKeyboard(pendingSsid);
+}
+
 static void onScanResults(std::vector<std::pair<String, int>> &nets) {
-  if (!scanModal) return;
-  lv_obj_add_flag(scanSpinner, LV_OBJ_FLAG_HIDDEN);
+  if (!scanModal || !scanList) return;
+  if (scanSpinner) lv_obj_add_flag(scanSpinner, LV_OBJ_FLAG_HIDDEN);
+  if (nets.empty()) { lv_list_add_text(scanList, "No networks found - close and retry"); return; }
+  // F6: hard cap on rows. `nets` is sorted by RSSI descending (wifi_mgr_scan_done), so this keeps
+  // the 12 strongest. Each row is 3 LVGL objects plus a heap String; a dense apartment/office scan
+  // returning 30-50 SSIDs would otherwise allocate ~15-20KB of the fixed pool for the list alone.
+  size_t shown = 0;
   for (auto &n : nets) {
+    if (shown++ >= MAX_SCAN_ROWS) break;
     String txt = n.first + "  (" + String(n.second) + " dBm)";
     lv_obj_t *btn = lv_list_add_button(scanList, LV_SYMBOL_WIFI, txt.c_str());
     lv_obj_set_user_data(btn, new String(n.first));
@@ -105,19 +135,35 @@ static void onScanResults(std::vector<std::pair<String, int>> &nets) {
     lv_obj_add_event_cb(btn, [](lv_event_t *e) {
       String *ssid = (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
       if (!ssid) return;
-      openKeyboard(*ssid); // copies into pendingSsid by value; scanModal/btn still alive here
-      // Finding B: one-modal-at-a-time — close the scan modal now that the keyboard is up.
-      // MUST be the async variant: this deletes scanModal, the ANCESTOR of btn (whose CLICKED
-      // event is still being dispatched right now, mid-callback). lv_obj_delete_async() defers
-      // the actual teardown (and btn's own LV_EVENT_DELETE, which frees this ssid String) to run
-      // later via lv_async_call(), entirely outside this call stack, rather than synchronously
-      // unwinding through an in-flight ancestor delete triggered partway through handling it.
-      // NO manual delete of ssid here either way — the DELETE callback owns freeing it.
-      // Fix round 3 (Critical): guard against a double-tap landing in the ~5-10ms window before
-      // the deferred delete above actually runs — without this, a second tap re-enters here with
-      // scanModal already null, and lv_obj_delete_async(nullptr) trips LV_ASSERT_NULL -> the
-      // silent while(1) handler (same class of hang as the bug this round is fixing).
-      if (scanModal) { lv_obj_delete_async(scanModal); scanModal = nullptr; }
+      // Fix round 3 (Critical) + F9b: one guard for both re-entrancy windows — a second tap while
+      // the keyboard already exists, and a second tap in the ~30ms gap before it is created.
+      // Without it a re-entry would hit lv_obj_delete_async(nullptr) -> LV_ASSERT_NULL.
+      if (kbModal || kbPending) return;
+      // F9b step 1: COPY the ssid out of the doomed LVGL object graph BEFORE anything is queued for
+      // deletion. Everything downstream (openKeyboardDeferred, the READY handler's
+      // wifi_mgr_connect_to) reads pendingSsid, never this pointer — the String it points at is
+      // freed by btn's LV_EVENT_DELETE handler when the async teardown below actually runs.
+      pendingSsid = *ssid;
+      // F9b step 2: hide immediately so the UI reacts on this frame (the async delete lands a few
+      // ms later), then tear the scan modal down. MUST be the async variant: this deletes
+      // scanModal, the ANCESTOR of btn, whose CLICKED event is still being dispatched right now.
+      // lv_obj_delete_async() defers the teardown (and btn's own LV_EVENT_DELETE, which frees the
+      // ssid String) via lv_async_call() to a period-0 timer that runs on the very next
+      // lv_timer_handler() pass, entirely outside this call stack.
+      if (scanModal) {
+        lv_obj_add_flag(scanModal, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_delete_async(scanModal);
+        scanModal = nullptr; scanList = nullptr; scanSpinner = nullptr;
+      }
+      // F9b step 3: build the keyboard only AFTER that teardown has run. 30ms at loop()'s ~5ms
+      // cadence is several lv_timer_handler() passes, and the async delete's timer (period 0) is
+      // serviced on the first of them, so the scan list's memory is back in the pool before the
+      // keyboard asks for any. lv_timer_set_repeat_count(t, 1) makes it self-deleting after the
+      // single run (lv_timer.c:347-369).
+      kbPending = true;
+      lv_timer_t *t = lv_timer_create(openKeyboardDeferred, 30, nullptr);
+      if (t) lv_timer_set_repeat_count(t, 1);
+      else { kbPending = false; openKeyboard(pendingSsid); } // pool too tight for a timer: degrade, don't wedge
     }, LV_EVENT_CLICKED, nullptr);
   }
 }

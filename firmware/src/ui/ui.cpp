@@ -73,16 +73,6 @@ void ui_init() {
   lv_obj_set_style_bg_color(sbDot, COL_MUTED, 0);
   lv_obj_align(sbDot, LV_ALIGN_RIGHT_MID, -6, 0);
 
-  // --- error banner (hidden by default) ---
-  banner = lv_label_create(scr);
-  lv_obj_set_style_bg_color(banner, COL_BAD, 0);
-  lv_obj_set_style_bg_opa(banner, LV_OPA_COVER, 0);
-  lv_obj_set_style_text_color(banner, lv_color_hex(0xFFFFFF), 0);
-  lv_obj_set_style_pad_all(banner, 6, 0);
-  lv_obj_set_width(banner, SCREEN_W);
-  lv_obj_align(banner, LV_ALIGN_TOP_MID, 0, 32);
-  lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
-
   // --- tileview: 2D sparse grid (4-column horizontal carousel + Tokens hanging under Claude) ---
   tileview = lv_tileview_create(scr);
   lv_obj_set_size(tileview, SCREEN_W, SCREEN_H - 32 - 18);
@@ -116,6 +106,23 @@ void ui_init() {
   updateDots();
 
   settings_build(ui_settings_parent()); // Task 8: settings/WiFi page built inside the col-3 tile
+
+  // --- error banner (hidden by default) ---
+  // Final-review F1: this used to be created BEFORE the tileview on the same parent, so it was
+  // painted under it and never once reached the screen. LVGL draws siblings in creation order and
+  // the tileview is opaque (the default theme applies styles.scr — bg_opa = LV_OPA_COVER — to
+  // lv_tileview_class, and this file sets an opaque bg_color on it as well), and it occupies the
+  // exact same y=32 origin with a 430px height. Creating it last puts it on top; the explicit
+  // move_foreground below keeps it there if anything is ever added to `scr` after this point.
+  banner = lv_label_create(scr);
+  lv_obj_set_style_bg_color(banner, COL_BAD, 0);
+  lv_obj_set_style_bg_opa(banner, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(banner, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_pad_all(banner, 6, 0);
+  lv_obj_set_width(banner, SCREEN_W);
+  lv_obj_align(banner, LV_ALIGN_TOP_MID, 0, 32);
+  lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(banner);
 }
 
 void ui_apply(const UsageData &u) {
