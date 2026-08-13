@@ -303,9 +303,16 @@ void screen_copilot_apply(const UsageData &u) {
   snprintf(pctBuf, sizeof(pctBuf), "%.1f%% used", u.cpPct);
   lv_label_set_text(cpPctL, pctBuf);
   if (u.cpHasReset) {
-    char cd[16];
-    fmt_countdown(u.cpResetsInSec - (int32_t)((millis() - u.receivedAtMs) / 1000), cd, sizeof(cd));
-    lv_label_set_text_fmt(cpReset, "resets in %s", cd);
+    // Mirrors applyLimitScreen's stale-aware override (Task 9 cleanup item 1): once the reset
+    // window itself has elapsed AND the section is stale, a countdown would just be a frozen/wrong
+    // number, so show "resets: --" instead — same rule the Claude/Codex arc+bar subs already use.
+    int32_t remaining = u.cpResetsInSec - (int32_t)((millis() - u.receivedAtMs) / 1000);
+    if (remaining <= 0 && stale) lv_label_set_text(cpReset, "resets: --");
+    else {
+      char cd[16];
+      fmt_countdown(remaining, cd, sizeof(cd));
+      lv_label_set_text_fmt(cpReset, "resets in %s", cd);
+    }
   }
   if (u.cpPlan[0]) lv_label_set_text_fmt(cpPlanL, "plan: %s", u.cpPlan);
 }
@@ -366,7 +373,6 @@ void screen_tokens_apply(const UsageData &u) {
   lv_label_set_text_fmt(tkCost, "est. value: %s this month - %s all time", c1, c2);
 }
 
-static UsageData lastApplied;
 void screens_tick_1s(const UsageData &u) {
   if (!u.valid) return;
   // re-apply the countdown-bearing screens so "resets in" stays live between polls

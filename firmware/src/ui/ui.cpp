@@ -150,7 +150,13 @@ void ui_tick_1s() {
   const char *msg = nullptr;
   if (wifi_mgr_state() != WifiState::CONNECTED && wifi_mgr_has_saved()) msg = "WiFi disconnected - reconnecting...";
   else if (net_status() == NetStatus::AUTH_ERROR) msg = "Relay auth rejected - check device token";
-  else if (net_status() == NetStatus::OK && sinceOk > 300 && sinceOk != INT32_MAX) msg = "Data stale - relay unreachable?";
+  // Task 9 cleanup item 3: was gated on net_status()==OK, which is nearly unsatisfiable together
+  // with sinceOk>300 — a poll that succeeds sets lastOkMs to ~now, and any poll that fails moves
+  // status away from OK entirely (see net.cpp's netTask), so the relay-down case this banner
+  // exists for (HTTP_ERROR/PARSE_ERROR/WIFI_DOWN persisting once the relay stops answering) could
+  // never actually show it. Any status except AUTH_ERROR (which keeps its own banner above) now
+  // qualifies; precedence stays wifi-down > auth > stale via the else-if chain.
+  else if (net_status() != NetStatus::AUTH_ERROR && sinceOk > 300 && sinceOk != INT32_MAX) msg = "Data stale - relay unreachable?";
   if (msg) { lv_label_set_text(banner, msg); lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN); }
   else lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
   // live countdowns between polls
