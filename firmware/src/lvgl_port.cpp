@@ -34,6 +34,10 @@ void lvgl_port_init() {
   size_t buf_bytes = SCREEN_W * BUF_LINES * sizeof(uint16_t);
   uint8_t *buf1 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
   uint8_t *buf2 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+  if (!buf1 || !buf2) {
+    Serial.println("FATAL: LVGL PSRAM buffer allocation failed");
+    while (true) delay(1000);
+  }
 
   lv_display_t *disp = lv_display_create(SCREEN_W, SCREEN_H);
   lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);

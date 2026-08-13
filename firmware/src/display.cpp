@@ -15,10 +15,13 @@ void display_init() {
       PIN_LCD_G0, PIN_LCD_G1, PIN_LCD_G2, PIN_LCD_G3, PIN_LCD_G4, PIN_LCD_G5,
       PIN_LCD_B0, PIN_LCD_B1, PIN_LCD_B2, PIN_LCD_B3, PIN_LCD_B4,
       1 /* hsync_polarity */, 10 /* hsync_front_porch */, 8 /* hsync_pulse_width */, 50 /* hsync_back_porch */,
-      1 /* vsync_polarity */, 10 /* vsync_front_porch */, 8 /* vsync_pulse_width */, 20 /* vsync_back_porch */);
-      // If the image tears or shimmers, first try lowering the pixel clock:
-      // append args (..., 1 /* pclk_active_neg */, 12000000 /* prefer_speed */) and/or
-      // the ESPHome porch set (hsync 10/8/20, vsync 10/8/10).
+      1 /* vsync_polarity */, 10 /* vsync_front_porch */, 8 /* vsync_pulse_width */, 20 /* vsync_back_porch */,
+      1 /* pclk_active_neg */, 12000000 /* prefer_speed: 12MHz, matches the ESPHome community config for this panel */);
+      // Fix-ladder rung 1 applied above (pclk_active_neg=1, prefer_speed=12MHz) to address the
+      // RGB-panel/PSRAM-contention glitching seen on hardware. Trailing ctor args left at default:
+      // useBigEndian=false, de_idle_high=0, pclk_idle_high=0, bounce_buffer_size_px=0.
+      // If glitching persists, rung 2 is the ESPHome porch set (hsync 10/8/20, vsync 10/8/10);
+      // rung 3 is enabling bounce_buffer_size_px (last ctor param, unused so far) for DMA bounce-buffered transfers.
 
   gfx = new Arduino_RGB_Display(SCREEN_W, SCREEN_H, rgbpanel, 0 /* rotation */, true /* auto_flush */,
                                 bus, GFX_NOT_DEFINED /* RST */,
