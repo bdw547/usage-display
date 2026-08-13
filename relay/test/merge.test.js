@@ -10,6 +10,9 @@ function snap(machineId, over = {}) {
     v: 1,
     machineId,
     sentAt: iso(10),
+    // B2: the relay stamps receivedAt on every push (worker.js). Ages are now computed
+    // from it, so fixtures must carry it. Transit is ~0 here, so receivedAt == sentAt.
+    receivedAt: iso(10),
     claude: {
       limits: {
         fetchedAt: iso(60),
@@ -31,6 +34,20 @@ function snap(machineId, over = {}) {
     copilot: { quota: { fetchedAt: iso(300), used: 9459, included: 30000, pctUsed: 31.6, resetsAt: '2026-09-01T00:00:00Z', plan: 'business' } },
     ...over,
   };
+}
+
+// A machine whose clock is off by skewMs. Every timestamp the COLLECTOR mints moves
+// (sentAt, fetchedAt, computedAt); receivedAt is stamped by the relay and resetsAt comes
+// straight from the vendor payloads, so neither of those moves.
+function skewed(machineId, skewMs) {
+  const shift = (isoStr) => new Date(Date.parse(isoStr) + skewMs).toISOString();
+  const s = snap(machineId);
+  s.sentAt = shift(s.sentAt);
+  s.claude.limits.fetchedAt = shift(s.claude.limits.fetchedAt);
+  s.claude.tokens.computedAt = shift(s.claude.tokens.computedAt);
+  s.codex.limits.fetchedAt = shift(s.codex.limits.fetchedAt);
+  s.copilot.quota.fetchedAt = shift(s.copilot.quota.fetchedAt);
+  return s;
 }
 
 test('relSeconds converts ISO to relative seconds from now', () => {
@@ -64,6 +81,7 @@ test('two machines: tokens sum, freshest limits win', () => {
   newer.claude.tokens.costUsd = { month: 1.5, allTime: 2.0 };
   const s = mergeSnapshots([older, newer], NOW);
   assert.equal(s.claude.limits.session.pct, 44, 'freshest machine limits win');
+  assert.equal(s.claude.limits.ageSec, 5);
   assert.equal(s.claude.tokens.today.total, 1354, 'today totals sum across machines');
   assert.equal(s.claude.tokens.today.in, 101);
   assert.equal(s.claude.tokens.costUsd.month, 14);
@@ -72,7 +90,7 @@ test('two machines: tokens sum, freshest limits win', () => {
 });
 
 test('null sections tolerated and omitted machines still counted', () => {
-  const bare = { v: 1, machineId: 'm3', sentAt: iso(20), claude: { limits: null, tokens: null }, codex: { limits: null }, copilot: { quota: null } };
+  const bare = { v: 1, machineId: 'm3', sentAt: iso(20), receivedAt: iso(20), claude: { limits: null, tokens: null }, codex: { limits: null }, copilot: { quota: null } };
   const s = mergeSnapshots([bare], NOW);
   assert.equal(s.claude.limits, null);
   assert.equal(s.claude.tokens, null);
@@ -86,4 +104,123 @@ test('empty input produces empty-but-valid summary', () => {
   assert.equal(s.v, 1);
   assert.deepEqual(s.machines, []);
   assert.equal(s.claude.limits, null);
+});
+
+// --- B2: clock-skew immunity -------------------------------------------------
+
+test('B2: a machine 1h fast and a machine 1h slow produce the identical summary', () => {
+  const base = mergeSnapshots([snap('m1')], NOW);
+  const fast = mergeSnapshots([skewed('m1', 3600_000)], NOW);
+  const slow = mergeSnapshots([skewed('m1', -3600_000)], NOW);
+  assert.deepEqual(fast, base, 'a +1h clock changes nothing in the summary');
+  assert.deepEqual(slow, base, 'a -1h clock changes nothing in the summary');
+  // and the ages are the true ones, not the skewed ones
+  assert.equal(fast.claude.limits.ageSec, 60);
+  assert.equal(fast.claude.tokens.ageSec, 30);
+  assert.equal(fast.copilot.quota.ageSec, 300);
+  assert.equal(fast.machines[0].ageSec, 10);
+});
+
+test('B2: a fast clock can no longer hijack freshest-wins', () => {
+  const drifty = snap('drifty');
+  drifty.claude.limits.session.pct = 99;
+  // Truly fetched 2h ago, but this box runs 1h fast so the ISO reads 1h in the FUTURE.
+  drifty.claude.limits.fetchedAt = new Date(NOW - 7200_000 + 3600_000).toISOString();
+  drifty.sentAt = new Date(NOW - 10_000 + 3600_000).toISOString();
+  drifty.receivedAt = iso(10);
+  const s = mergeSnapshots([drifty, snap('honest')], NOW);
+  assert.equal(s.claude.limits.session.pct, 13, 'the honest 60s-old machine wins');
+  assert.equal(s.claude.limits.ageSec, 60);
+  // and the drifty machine's own age is reported as its real 2h, never negative
+  const only = mergeSnapshots([drifty], NOW);
+  assert.equal(only.claude.limits.ageSec, 7200);
+});
+
+test('B2: ages never go negative even when everything is stamped in the future', () => {
+  const future = snap('future');
+  future.receivedAt = new Date(NOW + 60_000).toISOString(); // relay clock cannot really do this; clamp anyway
+  const s = mergeSnapshots([future], NOW);
+  assert.equal(s.machines[0].ageSec, 0);
+  assert.ok(s.claude.limits.ageSec >= 0);
+});
+
+test('B2: legacy snapshots without receivedAt still merge (best-effort ages)', () => {
+  const legacy = snap('legacy');
+  delete legacy.receivedAt;
+  const s = mergeSnapshots([legacy], NOW);
+  assert.equal(s.machines[0].ageSec, 10);
+  assert.equal(s.claude.limits.ageSec, 60);
+});
+
+// --- B3: dead machines must not pollute the summed token windows -------------
+
+test('B3: a machine whose tokens are >24h old is excluded from the sums but still listed', () => {
+  const live = snap('live');
+  const dead = snap('dead');
+  dead.sentAt = iso(47 * 3600);
+  dead.receivedAt = iso(47 * 3600);
+  dead.claude.tokens.computedAt = iso(48 * 3600); // 48h old -> excluded
+  const s = mergeSnapshots([live, dead], NOW);
+  assert.equal(s.claude.tokens.today.total, 1350, 'only the live machine contributes');
+  assert.equal(s.claude.tokens.costUsd.month, 12.5);
+  assert.equal(s.claude.tokens.ageSec, 30, 'age is the oldest INCLUDED contributor');
+  assert.equal(s.machines.length, 2, 'machines[] still lists the dead box');
+  assert.ok(s.machines.some((m) => m.id === 'dead' && m.ageSec > 24 * 3600));
+});
+
+test('B3: a machine just under the 24h cutoff still contributes', () => {
+  const live = snap('live');
+  const old = snap('old');
+  old.sentAt = iso(23 * 3600);
+  old.receivedAt = iso(23 * 3600);
+  old.claude.tokens.computedAt = iso(23 * 3600);
+  const s = mergeSnapshots([live, old], NOW);
+  assert.equal(s.claude.tokens.today.total, 2700, 'both machines sum');
+  assert.equal(s.claude.tokens.ageSec, 23 * 3600);
+});
+
+test('B3: when every contributor is stale the tokens section is null, not stale garbage', () => {
+  const dead = snap('dead');
+  dead.sentAt = iso(47 * 3600);
+  dead.receivedAt = iso(47 * 3600);
+  dead.claude.tokens.computedAt = iso(48 * 3600);
+  const s = mergeSnapshots([dead], NOW);
+  assert.equal(s.claude.tokens, null);
+  assert.equal(s.machines.length, 1);
+  assert.ok(s.claude.limits, 'limits are still served (freshest-wins has no cutoff)');
+});
+
+// --- B5: robustness ----------------------------------------------------------
+
+test('B5: a snapshot whose sections throw is skipped, never fatal', () => {
+  const boom = snap('boom');
+  Object.defineProperty(boom.claude, 'limits', { get() { throw new Error('boom'); }, enumerable: true });
+  Object.defineProperty(boom.codex, 'limits', { get() { throw new Error('boom'); }, enumerable: true });
+  const s = mergeSnapshots([boom, snap('m1')], NOW);
+  assert.equal(s.claude.limits.session.pct, 13, 'the healthy machine still serves limits');
+  assert.equal(s.codex.limits.weekly.pct, 27);
+  assert.equal(s.machines.length, 2);
+});
+
+test('B5: garbage-shaped sections are filtered instead of winning freshest-wins', () => {
+  const junk = {
+    machineId: 'junk',
+    sentAt: 'not-a-date',
+    receivedAt: iso(1),
+    claude: { limits: { fetchedAt: iso(1), session: 'nope', weekly: 42, extra: 'not-an-array' }, tokens: { computedAt: iso(1), today: 'nope' } },
+    codex: { limits: { fetchedAt: iso(1) } },
+    copilot: { quota: { fetchedAt: iso(1) } },
+  };
+  const s = mergeSnapshots([junk, snap('m1')], NOW);
+  assert.equal(s.claude.limits.session.pct, 13, 'usable data beats fresher garbage');
+  assert.equal(s.codex.limits.fiveHour.pct, 10);
+  assert.equal(s.copilot.quota.used, 9459);
+  assert.equal(s.claude.tokens.today.total, 1350, 'garbage buckets add nothing');
+  assert.equal(s.machines.length, 2);
+});
+
+test('B5: totally malformed entries (null, string, number) do not throw', () => {
+  const s = mergeSnapshots([null, 'string', 42, [], snap('m1')], NOW);
+  assert.equal(s.claude.limits.session.pct, 13);
+  assert.equal(s.machines.length, 5, 'every KV entry is still accounted for');
 });

@@ -30,14 +30,17 @@ in range automatically, and always shows current data regardless of location.
   First boot (no saved networks) lands on the WiFi setup flow.
 - **F8** Data freshness: token figures within ~90s of activity; vendor limit
   percentages within ~5 minutes. Status bar on every screen shows WiFi strength,
-  freshness dot (green <90s / amber <5m / red older), and clock.
+  freshness dot (green <90s / amber <5m / red older), and clock. Revised end-to-end
+  latency targets after the KV write-budget work: see the F8 addendum in §6.3.
 
 ### Non-functional
 - **N1** Never blank on failure: keep last-known data with a "stale Xm" badge.
 - **N2** Device holds no vendor credentials and never performs vendor OAuth —
   it only talks to our relay with a device read token.
 - **N3** Collector must not interfere with CLI logins (read tokens, never refresh).
-- **N4** Cloud costs: fit Cloudflare free tier (device polls ~4.3k/day ≪ 100k reads/day).
+- **N4** Cloud costs: fit Cloudflare free tier. Worker requests and KV reads are far
+  from their caps; the binding constraints are KV **writes and list ops (1,000/day
+  each)**, which the relay manages explicitly — see §6.3.
 - **N5** UI stays responsive at all times (no blocking network calls on the UI thread).
 
 ### Explicit user decisions
@@ -106,33 +109,153 @@ independently (N3, N1).
 
 ## 6. Data contract
 
-Machine snapshot (collector → relay), abridged:
+Schema `v1`, as **shipped** (verified against `collector/src/snapshot.js`,
+`collector/src/sources/*.js` and `relay/src/merge.js`).
+
+### 6.1 Machine snapshot (collector → relay, `POST /v1/push`)
 
 ```json
 {
+  "v": 1,
   "machineId": "wsl-desktop",
-  "sentAt": "2026-08-13T15:04:05Z",
+  "sentAt": "2026-08-13T15:04:05.000Z",
   "claude": {
-    "limits": { "fetchedAt": "…", "fiveHour": {"pct": 42, "resetsAt": "…"},
-                 "sevenDay": {"pct": 61, "resetsAt": "…"},
-                 "perModel": [{"name": "opus", "pct": 30, "resetsAt": "…"}] },
-    "tokens": { "computedAt": "…",
-                 "today": {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0},
-                 "week": {…}, "month": {…}, "allTime": {…},
-                 "costUsd": {"month": 0.0, "allTime": 0.0} }
+    "limits": {
+      "fetchedAt": "2026-08-13T15:03:48.000Z",
+      "session":   { "pct": 13.4, "resetsAt": "2026-08-13T19:30:00Z" },
+      "weekly":    { "pct": 51.0, "resetsAt": "2026-08-16T09:00:00Z" },
+      "extra":     [ { "label": "opus", "pct": 30.0, "resetsAt": "2026-08-16T09:00:00Z" } ],
+      "extraUsage": { "usedCreditsUsd": 12.34 }
+    },
+    "tokens": {
+      "computedAt": "2026-08-13T15:04:05.000Z",
+      "today":   { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "week":    { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "month":   { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "allTime": { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "costUsd": { "month": 0.0, "allTime": 0.0 }
+    }
   },
-  "codex":   { "limits": { "fetchedAt": "…", "fiveHour": {"pct": 0, "resetsAt": "…"},
-                            "weekly": {"pct": 0, "resetsAt": "…"} } },
-  "copilot": { "quota": { "fetchedAt": "…", "used": 143, "included": 300,
-                           "pct": 47.7, "resetsAt": "…", "plan": "…" } }
+  "codex": {
+    "limits": {
+      "fetchedAt": "2026-08-13T15:03:50.000Z",
+      "fiveHour": { "pct": 10.0, "resetsAt": "2026-08-13T18:00:00Z" },
+      "weekly":   { "pct": 27.0, "resetsAt": "2026-08-16T00:00:00Z" },
+      "plan": "plus"
+    }
+  },
+  "copilot": {
+    "quota": {
+      "fetchedAt": "2026-08-13T14:59:00.000Z",
+      "used": 143, "included": 300, "pctUsed": 47.7,
+      "resetsAt": "2026-09-01T00:00:00.000Z", "plan": "business"
+    }
+  }
 }
 ```
 
-Summary (relay → device): same leaf shapes, tokens summed, plus
-`{"machines": [{"id", "lastSeenSec"}], "serverTime": "…"}`. Any section may be
-`null` (device renders "no data yet"). Numbers may be stale — each carries its
-`fetchedAt` and the device renders age from `serverTime` (no reliance on device
-clock for freshness).
+Rules:
+- Any section (`claude.limits`, `claude.tokens`, `codex.limits`, `copilot.quota`)
+  may be `null`; so may any window inside one. `extra` is Claude's per-model /
+  per-scope weekly buckets (label from the vendor scope), `[]` when there are none.
+- `extraUsage` is pay-as-you-go credits beyond the plan (`null` when the vendor
+  omits `extra_usage`); see §14.
+- Copilot `included: null` means *unlimited* (the vendor's `unlimited` flag), and
+  `pctUsed` is then `0`.
+- Every window's `resetsAt` is copied **verbatim from the vendor payload** — it is
+  true absolute wall-clock time, not the collector's clock. `sentAt`, `fetchedAt`
+  and `computedAt` are the only fields minted by the collector's clock.
+- `machineId` must match `/^[\w.-]{1,64}$/`; the body must be ≤ 32 KB (the relay
+  rejects otherwise with 400/413).
+- The relay stamps `receivedAt` (its own clock) onto the stored copy. Collectors
+  never send it.
+- Response is `{"ok":true}`, or `{"ok":true,"skipped":true}` when the relay decided
+  the snapshot was not worth a KV write (see 6.3).
+
+### 6.2 Summary (relay → device, `GET /v1/summary`)
+
+```json
+{
+  "v": 1,
+  "serverTime": "2026-08-13T15:04:17.000Z",
+  "machines": [ { "id": "wsl-desktop", "ageSec": 12 } ],
+  "claude": {
+    "limits": {
+      "ageSec": 29,
+      "session": { "pct": 13.4, "resetsInSec": 15943 },
+      "weekly":  { "pct": 51.0, "resetsInSec": 236743 },
+      "extra":   [ { "label": "opus", "pct": 30.0, "resetsInSec": 236743 } ],
+      "extraUsage": { "usedCreditsUsd": 12.34 }
+    },
+    "tokens": {
+      "ageSec": 12,
+      "today":   { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "week":    { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "month":   { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "allTime": { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 },
+      "costUsd": { "month": 0.0, "allTime": 0.0 }
+    }
+  },
+  "codex":   { "limits": { "ageSec": 27, "fiveHour": { "pct": 10.0, "resetsInSec": 10543 },
+                            "weekly": { "pct": 27.0, "resetsInSec": 118543 }, "plan": "plus" } },
+  "copilot": { "quota":  { "ageSec": 317, "used": 143, "included": 300, "pctUsed": 47.7,
+                            "resetsInSec": 1585543, "plan": "business" } }
+}
+```
+
+Merge and freshness rules (`relay/src/merge.js`):
+- **No ISO timestamps leave the relay except `serverTime`.** Every instant is a
+  relative integer: `ageSec` (seconds since the data was captured, never negative)
+  and `resetsInSec` (may be negative once a window has rolled over). The device
+  needs no correct clock — it adds its own elapsed-time counter to `ageSec`.
+- **Ages are clock-skew-free.** The relay never subtracts a collector timestamp
+  from its own clock. Per snapshot and section:
+  `ageSec = max(0, (serverTime − receivedAt) + (sentAt − fetchedAt))` — the first
+  delta is measured entirely on the relay's clock, the second entirely on the
+  collector's, so a drifting collector (WSL2 after suspend/resume) cancels out.
+  `machines[].ageSec = max(0, serverTime − receivedAt)`. `resetsInSec` stays
+  anchored to the relay clock because `resetsAt` is vendor-absolute (6.1).
+- **`claude.limits` / `codex.limits` / `copilot.quota`: freshest machine wins**,
+  ranked by the smallest skew-corrected `ageSec` (not by raw `fetchedAt`). Sections
+  that carry no usable value, or whose shape is broken, are skipped rather than
+  allowed to win; one malformed snapshot in KV can never fail the whole summary.
+- **`claude.tokens`: summed across machines**, and a machine whose tokens are older
+  than **24h is excluded from the sums** so a box that went offline stops inflating
+  "today"/"week" for the KV TTL. `tokens.ageSec` is the oldest *included*
+  contributor. All contributors stale ⇒ `claude.tokens: null`.
+- `machines[]` always lists **every** stored machine, including excluded/stale ones.
+- Any section may be `null` (device renders "no data yet"); a `pct` may be `null`
+  inside a present section.
+
+### 6.3 Freshness, write budget and the F8 latency addendum
+
+F8 ("token figures within ~90s of activity") predates the KV-budget work. The
+Cloudflare free plan allows **1,000 KV writes/day and 1,000 list ops/day**, while
+the shipped cadences (collector push every 30s, device poll every 20s) would spend
+2,880 writes and 4,320 lists per day — the relay would start throwing mid-afternoon
+and the display would go dark for the rest of the UTC day. The relay therefore
+spends writes deliberately (`relay/src/worker.js`):
+
+| change in an incoming snapshot | KV write |
+| --- | --- |
+| machine not in KV yet | immediately |
+| vendor limit/quota **values** changed (pct, resets, plan, extraUsage) | immediately |
+| only `claude.tokens` changed | at most once per **150 s** |
+| nothing changed (only timestamps moved) | heartbeat every **300 s**, which also refreshes the 7-day TTL and keeps `machines[].ageSec` honest |
+
+and `KV.list('machine:')` is cached per Worker isolate for **300 s** — machine
+*values* are still read fresh on every request, only the key list is cached, so a
+brand-new machine can take up to 5 minutes to appear in `machines[]`.
+
+**F8 addendum (revised targets).** Token totals persist within **≤150 s** of being
+computed and reach the device within **≤~170 s** worst case (150 s write deferral +
+20 s device poll). Vendor limit percentages are unchanged at ~5 min end to end
+(5 min collector poll + ≤30 s push + 20 s device poll), because value changes are
+never deferred. Reported `ageSec` for an unchanged section can lag reality by up to
+the 300 s heartbeat — still well under the firmware's 600 s stale-chip threshold.
+Steady-state cost is roughly 300-500 writes/day and ≤288 lists/day per collector;
+the 1,000/day ceiling is shared across machines, so ~2 collectors fit comfortably
+and a third would want a longer `PUSH_EVERY_MS` or a `machines` index key.
 
 ## 7. Firmware
 

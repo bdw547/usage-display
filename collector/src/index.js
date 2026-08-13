@@ -11,6 +11,7 @@ import { fetchCodexLimits } from './sources/codex.js';
 import { fetchCopilotQuota } from './sources/copilot.js';
 import { buildSnapshot } from './snapshot.js';
 import { pushSnapshot } from './push.js';
+import { acceptPollResult } from './poll.js';
 
 const ARGS = new Set(process.argv.slice(2));
 const ONCE = ARGS.has('--once');
@@ -33,7 +34,18 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 async function main() {
   const config = loadConfig();
   const state = loadState(STATE_PATH);
-  const cache = { claudeLimits: null, claudeTokens: null, codexLimits: null, copilotQuota: null };
+  // B6: restart with the last-good vendor sections instead of nulls (claudeTokens is
+  // recomputed from state.days every cycle, so it is not persisted separately).
+  const cache = {
+    claudeLimits: state.cache.claudeLimits,
+    claudeTokens: null,
+    codexLimits: state.cache.codexLimits,
+    copilotQuota: state.cache.copilotQuota,
+  };
+  const persistCache = () => {
+    state.cache = { claudeLimits: cache.claudeLimits, codexLimits: cache.codexLimits, copilotQuota: cache.copilotQuota };
+  };
+  persistCache();
   const nextAt = Object.fromEntries(POLLS.map((p) => [p.key, 0]));
   let stopping = false;
   process.on('SIGTERM', () => { stopping = true; });
@@ -54,16 +66,28 @@ async function main() {
     }
 
     // 2) Vendor polls on their own cadences; failures keep the last good value
+    let cacheChanged = false;
     for (const p of POLLS) {
       if (Date.now() < nextAt[p.key] && !ONCE) continue;
       nextAt[p.key] = Date.now() + p.everyMs + Math.floor(Math.random() * 15_000); // jitter
       try {
         const v = await p.fn();
-        if (v) cache[p.key] = v;
-        else log(`${p.key}: no fresh data (kept last value)`);
+        // B7: never let a fallback path (e.g. Codex rollout files) rewind a section.
+        if (acceptPollResult(cache[p.key], v)) {
+          cache[p.key] = v;
+          cacheChanged = true;
+        } else if (v) {
+          log(`${p.key}: ignored a result older than the cached one (kept last value)`);
+        } else {
+          log(`${p.key}: no fresh data (kept last value)`);
+        }
       } catch (err) {
         log(`${p.key} failed:`, err.message);
       }
+    }
+    if (cacheChanged) {
+      persistCache(); // B6: survive a restart
+      try { saveState(STATE_PATH, state); } catch (err) { log('state save failed:', err.message); }
     }
 
     // 3) Assemble + push
@@ -79,6 +103,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, sleep));
   } while (!stopping);
 
+  persistCache();
   saveState(STATE_PATH, state);
   log('usage-collector stopped');
 }

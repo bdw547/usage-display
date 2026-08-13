@@ -42,11 +42,22 @@ export function latestRolloutRateLimits(sessionsDir) {
       try {
         const j = JSON.parse(lines[i]);
         const rl = j?.payload?.rate_limits;
-        if (rl) return { rateLimits: rl, fetchedAt: j.timestamp ?? null };
+        // B8: some rollout lines carry no (or an unparseable) timestamp. Emitting
+        // fetchedAt:null made the relay drop the whole codex section, so fall back
+        // to the file's mtime — the last time Codex wrote to this session.
+        if (rl) return { rateLimits: rl, fetchedAt: usableStamp(j.timestamp) ?? fileMtimeIso(f) };
       } catch { /* keep scanning */ }
     }
   }
   return null;
+}
+
+function usableStamp(ts) {
+  return typeof ts === 'string' && !Number.isNaN(Date.parse(ts)) ? ts : null;
+}
+
+function fileMtimeIso(path) {
+  try { return new Date(statSync(path).mtimeMs).toISOString(); } catch { return null; }
 }
 
 export async function fetchCodexLimits({ home = homedir(), fetchImpl = fetch, now = () => Date.now() } = {}) {
@@ -72,6 +83,7 @@ export async function fetchCodexLimits({ home = homedir(), fetchImpl = fetch, no
 
   // 2) Fallback: last known values from the newest session rollout file.
   const hit = latestRolloutRateLimits(join(home, '.codex/sessions'));
-  if (hit) return normalizeCodexRateLimits(hit.rateLimits, hit.fetchedAt);
+  // Without a fetchedAt the relay cannot age the section, so it would discard it (B8).
+  if (hit && hit.fetchedAt) return normalizeCodexRateLimits(hit.rateLimits, hit.fetchedAt);
   return null;
 }
