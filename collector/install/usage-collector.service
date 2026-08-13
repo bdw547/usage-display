@@ -1,0 +1,18 @@
+# collector/install/usage-collector.service
+[Unit]
+Description=AI usage collector (Claude/Codex/Copilot -> relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=__NODE__ %h/usage-display/collector/src/index.js
+Restart=always
+RestartSec=15
+Environment=NODE_ENV=production
+# Keep it read-only outside its own state dir
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/usage-collector
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
