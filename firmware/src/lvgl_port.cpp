@@ -7,7 +7,23 @@
 #include "touch.h"
 #include "board.h"
 
-static const size_t BUF_LINES = 80; // partial render buffer height
+// Fix-ladder rung 2: draw buffers moved out of PSRAM into internal DMA-capable RAM so LVGL's
+// own render/blit traffic stops contending with the RGB panel's PSRAM framebuffer DMA (rung 1,
+// display.cpp). Halved from 80 to 40 lines (37.5KB/buffer instead of 75KB) to leave headroom for
+// WiFi/TLS/task-stack allocations that land later in boot (net_start() et al).
+static const size_t BUF_LINES = 40; // partial render buffer height
+
+// Allocates a draw buffer preferring internal DMA-capable RAM; falls back to PSRAM (with a
+// warning) rather than halting outright, since a PSRAM buffer is still strictly better than no
+// UI at all — halting is reserved for the case where NEITHER pool can satisfy the request.
+static uint8_t *allocDrawBuffer(size_t buf_bytes, const char *tag) {
+  uint8_t *p = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  if (p) return p;
+  Serial.printf("WARN: %s internal-DMA alloc failed (%u bytes) - falling back to PSRAM\n", tag, (unsigned)buf_bytes);
+  p = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+  if (!p) Serial.printf("FATAL: %s PSRAM fallback also failed (%u bytes)\n", tag, (unsigned)buf_bytes);
+  return p;
+}
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   int32_t w = area->x2 - area->x1 + 1;
@@ -32,10 +48,10 @@ void lvgl_port_init() {
   lv_tick_set_cb([]() -> uint32_t { return millis(); });
 
   size_t buf_bytes = SCREEN_W * BUF_LINES * sizeof(uint16_t);
-  uint8_t *buf1 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
-  uint8_t *buf2 = (uint8_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+  uint8_t *buf1 = allocDrawBuffer(buf_bytes, "lvgl buf1");
+  uint8_t *buf2 = allocDrawBuffer(buf_bytes, "lvgl buf2");
   if (!buf1 || !buf2) {
-    Serial.println("FATAL: LVGL PSRAM buffer allocation failed");
+    Serial.println("FATAL: LVGL draw buffer allocation failed in both internal and PSRAM pools");
     while (true) delay(1000);
   }
 

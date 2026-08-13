@@ -14,6 +14,7 @@ struct UsageData {
   bool hasClaudeLimits = false; int32_t claudeLimitsAge = 0;
   Window session, weekly;
   struct { char label[16]; Window w; } extras[3]; int extraCount = 0;
+  bool hasCredits = false; float creditsUsd = 0; // claude.limits.extraUsage.usedCreditsUsd
   // claude tokens
   bool hasTokens = false; int32_t tokensAge = 0;
   TokenBucket today, week, month, allTime;

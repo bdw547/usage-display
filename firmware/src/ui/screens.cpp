@@ -46,7 +46,7 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
 
   s.arc = lv_arc_create(tile);
   lv_obj_set_size(s.arc, 230, 230);
-  lv_obj_align(s.arc, LV_ALIGN_TOP_MID, 0, 48);
+  lv_obj_align(s.arc, LV_ALIGN_TOP_MID, 0, 38); // moved up ~10px to make room for bar-style extras below
   lv_arc_set_rotation(s.arc, 135);
   lv_arc_set_bg_angles(s.arc, 0, 270);
   lv_arc_set_range(s.arc, 0, 100);
@@ -62,28 +62,39 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
   lv_obj_t *pn = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, primaryName);
   lv_obj_align_to(pn, s.arc, LV_ALIGN_CENTER, 0, 28);
   s.arcSub = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
-  lv_obj_align_to(s.arcSub, s.arc, LV_ALIGN_CENTER, 0, 50);
+  lv_obj_align_to(s.arcSub, s.arc, LV_ALIGN_BOTTOM_MID, 0, -6); // centered in the 270-degree arc's bottom gap
 
   s.barLabel = mkLabel(tile, &lv_font_montserrat_16, COL_TEXT, secondaryName);
-  lv_obj_align(s.barLabel, LV_ALIGN_TOP_LEFT, 36, 316);
+  lv_obj_align(s.barLabel, LV_ALIGN_TOP_LEFT, 36, 276);
   s.barPct = mkLabel(tile, &lv_font_montserrat_16, COL_TEXT, "--");
-  lv_obj_align(s.barPct, LV_ALIGN_TOP_RIGHT, -36, 316);
+  lv_obj_align(s.barPct, LV_ALIGN_TOP_RIGHT, -36, 276);
   s.bar = lv_bar_create(tile);
   lv_obj_set_size(s.bar, 408, 14);
-  lv_obj_align(s.bar, LV_ALIGN_TOP_MID, 0, 344);
+  lv_obj_align(s.bar, LV_ALIGN_TOP_MID, 0, 300);
   lv_bar_set_range(s.bar, 0, 100);
   lv_obj_set_style_bg_color(s.bar, COL_CARD, LV_PART_MAIN);
   lv_obj_set_style_bg_color(s.bar, accent, LV_PART_INDICATOR);
   s.barSub = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
-  lv_obj_align(s.barSub, LV_ALIGN_TOP_MID, 0, 366);
+  lv_obj_align(s.barSub, LV_ALIGN_TOP_MID, 0, 320);
 
-  for (int i = 0; i < 3; i++) { // optional scoped-limit rows (Claude opus/sonnet etc.)
+  // Optional scoped-limit rows (Claude opus/sonnet/fable etc.), bar-style like Weekly above:
+  // label left, pct right, a slimmer bar beneath. Up to 3, stacked with consistent spacing.
+  static const int EXTRA_Y0 = 340, EXTRA_PITCH = 32, EXTRA_BAR_H = 8;
+  for (int i = 0; i < 3; i++) {
+    int y = EXTRA_Y0 + i * EXTRA_PITCH;
     s.extraRows[i] = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
-    lv_obj_align(s.extraRows[i], LV_ALIGN_TOP_LEFT, 36, 396 + i * 22);
+    lv_obj_align(s.extraRows[i], LV_ALIGN_TOP_LEFT, 36, y);
     s.extraPcts[i] = mkLabel(tile, &lv_font_montserrat_14, COL_TEXT, "");
-    lv_obj_align(s.extraPcts[i], LV_ALIGN_TOP_RIGHT, -36, 396 + i * 22);
+    lv_obj_align(s.extraPcts[i], LV_ALIGN_TOP_RIGHT, -36, y);
+    s.extraBars[i] = lv_bar_create(tile);
+    lv_obj_set_size(s.extraBars[i], 408, EXTRA_BAR_H);
+    lv_obj_align(s.extraBars[i], LV_ALIGN_TOP_MID, 0, y + 16);
+    lv_bar_set_range(s.extraBars[i], 0, 100);
+    lv_obj_set_style_bg_color(s.extraBars[i], COL_CARD, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s.extraBars[i], accent, LV_PART_INDICATOR);
     setHidden(s.extraRows[i], true);
     setHidden(s.extraPcts[i], true);
+    setHidden(s.extraBars[i], true);
   }
 
   s.na = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "no data yet");
@@ -116,7 +127,21 @@ static void applyLimitScreen(LimitScreen &s, bool has, const Window &prim, const
 }
 
 // ---------- Claude ----------
-void screen_claude_build(lv_obj_t *tile) { claudeAccent = COL_CLAUDE; buildLimitScreen(sClaude, tile, "Claude", COL_CLAUDE, "5-hour session", "Weekly"); }
+// Claude-only additions living on top of the shared limit-screen: a muted "swipe down for
+// tokens" affordance (Finding B — Tokens hangs off Claude as a vertical page, not a horizontal
+// one) and a "Usage credits" row (Finding E — data not sent by the relay yet, so this stays
+// hidden until parseSummary ever sets hasCredits).
+static lv_obj_t *claudeHint, *claudeCredits;
+
+void screen_claude_build(lv_obj_t *tile) {
+  claudeAccent = COL_CLAUDE;
+  buildLimitScreen(sClaude, tile, "Claude", COL_CLAUDE, "5-hour session", "Weekly");
+  claudeHint = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, LV_SYMBOL_DOWN);
+  lv_obj_align(claudeHint, LV_ALIGN_BOTTOM_MID, 0, -30);
+  claudeCredits = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
+  lv_obj_align(claudeCredits, LV_ALIGN_BOTTOM_MID, 0, -8);
+  setHidden(claudeCredits, true);
+}
 void screen_claude_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
   applyLimitScreen(sClaude, u.hasClaudeLimits, u.session, u.weekly, u, el);
@@ -124,10 +149,17 @@ void screen_claude_apply(const UsageData &u) {
     bool show = u.hasClaudeLimits && i < u.extraCount;
     setHidden(sClaude.extraRows[i], !show);
     setHidden(sClaude.extraPcts[i], !show);
+    setHidden(sClaude.extraBars[i], !show);
     if (show) {
-      lv_label_set_text_fmt(sClaude.extraRows[i], "weekly • %s", u.extras[i].label);
+      lv_label_set_text_fmt(sClaude.extraRows[i], "Weekly • %s", u.extras[i].label);
       lv_label_set_text_fmt(sClaude.extraPcts[i], "%d%%", (int)u.extras[i].w.pct);
+      lv_bar_set_value(sClaude.extraBars[i], (int)u.extras[i].w.pct, LV_ANIM_ON);
     }
+  }
+  setHidden(claudeCredits, !u.hasCredits);
+  if (u.hasCredits) {
+    char c[16]; fmt_cost(u.creditsUsd, c, sizeof(c));
+    lv_label_set_text_fmt(claudeCredits, "Usage credits: %s spent", c);
   }
 }
 

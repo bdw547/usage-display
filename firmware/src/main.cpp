@@ -17,6 +17,7 @@ void setup() {
   lvgl_port_init();
   wifi_mgr_init();
   ui_init();
+  Serial.printf("heap: internal=%u psram=%u\n", ESP.getFreeHeap(), ESP.getFreePsram());
   net_start();
   if (!wifi_mgr_has_saved()) ui_goto_settings(); // first boot: land on setup
   Serial.println("boot complete");

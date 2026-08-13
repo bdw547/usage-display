@@ -7,16 +7,29 @@
 #include "../net.h"
 #include <time.h>
 
+// 2D tile map (Finding B, M6 fix round): Tokens hangs off Claude as a swipe-UP page rather than
+// sitting in the main horizontal carousel. Grid:
+//   col0/row0 Claude --- col1 Codex --- col2 Copilot --- col3 Settings   (LV_DIR_HOR carousel)
+//   col0/row1 Tokens (only reachable by swiping down from Claude, and back up from Tokens)
 static lv_obj_t *tileview;
-static lv_obj_t *tiles[5];
+static lv_obj_t *tileClaude, *tileTokens, *tileCodex, *tileCopilot, *tileSettings;
 static lv_obj_t *sbWifi, *sbClock, *sbDot, *sbMachines, *banner;
-static lv_obj_t *dots[5];
+static lv_obj_t *dots[4]; // one per COLUMN, not per tile — Claude and Tokens share column 0
 static UsageData current;
 
-static void updateDots() {
+// Column of the active tile; Claude and Tokens (same column, different row) map to the same dot.
+static int activeColumn() {
   lv_obj_t *active = lv_tileview_get_tile_active(tileview);
-  for (int i = 0; i < 5; i++)
-    lv_obj_set_style_bg_color(dots[i], tiles[i] == active ? COL_TEXT : COL_CARD, 0);
+  if (active == tileClaude || active == tileTokens) return 0;
+  if (active == tileCodex) return 1;
+  if (active == tileCopilot) return 2;
+  return 3; // tileSettings
+}
+
+static void updateDots() {
+  int col = activeColumn();
+  for (int i = 0; i < 4; i++)
+    lv_obj_set_style_bg_color(dots[i], i == col ? COL_TEXT : COL_CARD, 0);
 }
 
 void ui_init() {
@@ -60,27 +73,31 @@ void ui_init() {
   lv_obj_align(banner, LV_ALIGN_TOP_MID, 0, 32);
   lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
 
-  // --- tileview with 5 horizontal tiles ---
+  // --- tileview: 2D sparse grid (4-column horizontal carousel + Tokens hanging under Claude) ---
   tileview = lv_tileview_create(scr);
   lv_obj_set_size(tileview, SCREEN_W, SCREEN_H - 32 - 18);
   lv_obj_align(tileview, LV_ALIGN_TOP_MID, 0, 32);
   lv_obj_set_style_bg_color(tileview, COL_BG, 0);
   lv_obj_set_scrollbar_mode(tileview, LV_SCROLLBAR_MODE_OFF);
-  for (int i = 0; i < 5; i++) tiles[i] = lv_tileview_add_tile(tileview, i, 0, LV_DIR_HOR);
-  screen_claude_build(tiles[0]);
-  screen_codex_build(tiles[1]);
-  screen_copilot_build(tiles[2]);
-  screen_tokens_build(tiles[3]);
-  // tiles[4] = settings; built in Task 8
+  tileClaude   = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)(LV_DIR_HOR | LV_DIR_BOTTOM));
+  tileTokens   = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP);
+  tileCodex    = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_HOR);
+  tileCopilot  = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_HOR);
+  tileSettings = lv_tileview_add_tile(tileview, 3, 0, LV_DIR_HOR);
+  screen_claude_build(tileClaude);
+  screen_codex_build(tileCodex);
+  screen_copilot_build(tileCopilot);
+  screen_tokens_build(tileTokens);
+  // tileSettings built in Task 8
   lv_obj_add_event_cb(tileview, [](lv_event_t *) { updateDots(); }, LV_EVENT_VALUE_CHANGED, nullptr);
 
-  // --- page dots ---
-  for (int i = 0; i < 5; i++) {
+  // --- page dots: 4, one per column (row changes within column 0 don't move them) ---
+  for (int i = 0; i < 4; i++) {
     dots[i] = lv_obj_create(scr);
     lv_obj_set_size(dots[i], 8, 8);
     lv_obj_set_style_radius(dots[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(dots[i], 0, 0);
-    lv_obj_align(dots[i], LV_ALIGN_BOTTOM_MID, (i - 2) * 18, -5);
+    lv_obj_align(dots[i], LV_ALIGN_BOTTOM_MID, (2 * i - 3) * 9, -5);
   }
   updateDots();
 }
@@ -124,5 +141,5 @@ void ui_tick_1s() {
   screens_tick_1s(current);
 }
 
-void ui_goto_settings() { lv_tileview_set_tile_by_index(tileview, 4, 0, LV_ANIM_ON); updateDots(); }
-lv_obj_t *ui_settings_parent() { return tiles[4]; }
+void ui_goto_settings() { lv_tileview_set_tile_by_index(tileview, 3, 0, LV_ANIM_ON); updateDots(); }
+lv_obj_t *ui_settings_parent() { return tileSettings; }

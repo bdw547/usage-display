@@ -52,6 +52,11 @@ static bool parseSummary(const String &body, UsageData &u) {
       parseWindow(e, slot.w);
       u.extraCount++;
     }
+    // Not sent by the relay yet (separate task lands it) — tolerate absence: chained [] on a
+    // missing key yields a null JsonVariantConst, so this stays false/0 rather than throwing.
+    JsonVariantConst credits = cl["extraUsage"]["usedCreditsUsd"];
+    u.hasCredits = !credits.isNull();
+    u.creditsUsd = credits | 0.0f;
   }
   JsonVariantConst tk = doc["claude"]["tokens"];
   if (!tk.isNull()) {

@@ -16,12 +16,16 @@ void display_init() {
       PIN_LCD_B0, PIN_LCD_B1, PIN_LCD_B2, PIN_LCD_B3, PIN_LCD_B4,
       1 /* hsync_polarity */, 10 /* hsync_front_porch */, 8 /* hsync_pulse_width */, 50 /* hsync_back_porch */,
       1 /* vsync_polarity */, 10 /* vsync_front_porch */, 8 /* vsync_pulse_width */, 20 /* vsync_back_porch */,
-      1 /* pclk_active_neg */, 12000000 /* prefer_speed: 12MHz, matches the ESPHome community config for this panel */);
-      // Fix-ladder rung 1 applied above (pclk_active_neg=1, prefer_speed=12MHz) to address the
-      // RGB-panel/PSRAM-contention glitching seen on hardware. Trailing ctor args left at default:
-      // useBigEndian=false, de_idle_high=0, pclk_idle_high=0, bounce_buffer_size_px=0.
-      // If glitching persists, rung 2 is the ESPHome porch set (hsync 10/8/20, vsync 10/8/10);
-      // rung 3 is enabling bounce_buffer_size_px (last ctor param, unused so far) for DMA bounce-buffered transfers.
+      1 /* pclk_active_neg */, 12000000 /* prefer_speed: 12MHz, matches the ESPHome community config for this panel */,
+      false /* useBigEndian */, 0 /* de_idle_high */, 0 /* pclk_idle_high */,
+      480 * 10 /* bounce_buffer_size_px: fix-ladder rung 1 — a small internal-SRAM bounce
+                  buffer the esp_lcd_rgb driver DMA-refills from the PSRAM framebuffer, so the
+                  panel's continuous pixel-clock DMA stops contending directly with PSRAM against
+                  LVGL's own render/flush traffic. Full-UI redraw load exposed this; M3's plain
+                  test-pattern load didn't. Paired with rung 2 in lvgl_port.cpp (below). */);
+      // Fix-ladder rung 1 applied above (pclk_active_neg=1, prefer_speed=12MHz, bounce buffer) to
+      // address RGB-panel/PSRAM-contention glitching seen on hardware under real UI redraw load.
+      // Rung 3 (only if still glitchy after rungs 1+2): drop prefer_speed to 10000000.
 
   gfx = new Arduino_RGB_Display(SCREEN_W, SCREEN_H, rgbpanel, 0 /* rotation */, true /* auto_flush */,
                                 bus, GFX_NOT_DEFINED /* RST */,
