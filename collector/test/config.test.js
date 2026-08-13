@@ -28,6 +28,14 @@ test('falls back to tokens.json (written by relay deploy) and defaults machineId
   assert.ok(c.machineId.length > 0);
 });
 
+test('config.json wins over tokens.json when both exist', () => {
+  const home = homeWith({
+    'config.json': { relayUrl: 'https://config.example', pushToken: 'from-config' },
+    'tokens.json': { relayUrl: 'https://tokens.example', pushToken: 'from-tokens' },
+  });
+  assert.equal(loadConfig({ home }).pushToken, 'from-config');
+});
+
 test('throws a helpful error when nothing is configured', () => {
   const home = mkdtempSync(join(tmpdir(), 'uc-'));
   assert.throws(() => loadConfig({ home }), /usage-collector\/config\.json/);
