@@ -1,0 +1,11 @@
+{
+  "login": "ben-abeo",
+  "copilot_plan": "business",
+  "quota_reset_date": "2026-09-01",
+  "quota_reset_date_utc": "2026-09-01T00:00:00.000Z",
+  "quota_snapshots": {
+    "chat": { "unlimited": true, "percent_remaining": 100, "entitlement": 0, "remaining": 0, "credits_used": 0 },
+    "completions": { "unlimited": true, "percent_remaining": 100, "entitlement": 0, "remaining": 0, "credits_used": 0 },
+    "premium_interactions": { "unlimited": false, "percent_remaining": 68.4, "entitlement": 30000, "remaining": 20541, "credits_used": 9459, "overage_permitted": true }
+  }
+}
