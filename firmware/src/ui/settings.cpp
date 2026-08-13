@@ -76,11 +76,20 @@ static void onScanResults(std::vector<std::pair<String, int>> &nets) {
   for (auto &n : nets) {
     String txt = n.first + "  (" + String(n.second) + " dBm)";
     lv_obj_t *btn = lv_list_add_button(scanList, LV_SYMBOL_WIFI, txt.c_str());
-    lv_obj_set_user_data(btn, new String(n.first)); // freed on click
+    lv_obj_set_user_data(btn, new String(n.first));
+    // Fix round 1 (Critical): ownership moved to the LVGL delete lifecycle. The previous
+    // "delete on click" freed the String while the button (and its dangling user_data) stayed
+    // alive whenever only kbModal closed (CANCEL) — a second tap on the same button was a
+    // use-after-free, and closing it again (or another connect) was a double-free. Freeing
+    // exactly once in LV_EVENT_DELETE means it's released when — and only when — the button
+    // itself is actually destroyed (modal close via X, keyboard READY closing scanModal, or any
+    // future lv_obj_clean), regardless of how many times CLICKED fires first.
+    lv_obj_add_event_cb(btn, [](lv_event_t *e) {
+      delete (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    }, LV_EVENT_DELETE, nullptr);
     lv_obj_add_event_cb(btn, [](lv_event_t *e) {
       String *ssid = (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-      openKeyboard(*ssid);
-      delete ssid;
+      if (ssid) openKeyboard(*ssid); // NO delete here — the DELETE callback owns freeing
     }, LV_EVENT_CLICKED, nullptr);
   }
 }
@@ -95,11 +104,13 @@ static void rebuildSavedList() {
     lv_label_set_text(tl, LV_SYMBOL_TRASH);
     lv_obj_align(trash, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_user_data(trash, new String(c.ssid));
+    // Same ownership pattern as the scan-result buttons above: free exactly once, on delete.
+    lv_obj_add_event_cb(trash, [](lv_event_t *e) {
+      delete (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
+    }, LV_EVENT_DELETE, nullptr);
     lv_obj_add_event_cb(trash, [](lv_event_t *e) {
       String *ssid = (String *)lv_obj_get_user_data((lv_obj_t *)lv_event_get_target(e));
-      wifi_mgr_forget(*ssid);
-      delete ssid;
-      rebuildSavedList();
+      if (ssid) { wifi_mgr_forget(*ssid); rebuildSavedList(); } // NO delete here — DELETE owns it
     }, LV_EVENT_CLICKED, nullptr);
   }
   if (wifi_mgr_saved().empty()) lv_list_add_text(savedList, "No saved networks - add one below");
