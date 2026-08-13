@@ -5,12 +5,15 @@
 #include "touch.h"
 #include "lvgl_port.h"
 #include "wifi_mgr.h"
+#include "model.h"
+#include "net.h"
 
 static int taps = 0;
 
 void setup() {
   Serial.begin(115200);
   wifi_mgr_init();
+  net_start(); // spawns net task on core 0; polls relay every 20s
   display_init();
   touch_init();
   lvgl_port_init();
@@ -55,6 +58,14 @@ void loop() {
     Serial.printf("wifi state=%d ssid=%s ip=%s rssi=%d time=%02d:%02d:%02d\n",
                   (int)wifi_mgr_state(), wifi_mgr_ssid().c_str(), wifi_mgr_ip().c_str(),
                   wifi_mgr_rssi(), tm.tm_hour, tm.tm_min, tm.tm_sec);
+  }
+
+  UsageData u;
+  if (net_take_update(u)) {
+    char buf[24]; fmt_compact(u.today.total, buf, sizeof(buf));
+    Serial.printf("M5: machines=%d claude=%s%.0f%% tokensToday=%s copilot=%lld/%lld codexWeekly=%.0f%%\n",
+                  u.machineCount, u.hasClaudeLimits ? "" : "n/a ", u.session.pct, buf,
+                  (long long)u.cpUsed, (long long)u.cpIncluded, u.cxWeekly.pct);
   }
 
   delay(5);

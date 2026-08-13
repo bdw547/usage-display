@@ -1,0 +1,143 @@
+// firmware/src/net.cpp
+#include "net.h"
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include "wifi_mgr.h"
+#include "secrets.h"
+#include "certs.h"
+
+static SemaphoreHandle_t mutex;
+static UsageData shared;
+static bool dirty = false;
+static volatile NetStatus status = NetStatus::NEVER;
+static volatile uint32_t lastOkMs = 0;
+
+static const uint32_t POLL_MS = 20000;
+
+static void parseWindow(JsonVariantConst v, Window &w) {
+  w.has = !v.isNull();
+  if (!w.has) return;
+  w.pct = v["pct"] | 0.0f;
+  w.hasReset = !v["resetsInSec"].isNull();
+  w.resetsInSec = v["resetsInSec"] | 0;
+}
+
+static void parseBucket(JsonVariantConst v, TokenBucket &b) {
+  b.in = v["in"] | 0LL; b.out = v["out"] | 0LL;
+  b.cacheRead = v["cacheRead"] | 0LL; b.cacheWrite = v["cacheWrite"] | 0LL;
+  b.total = v["total"] | 0LL;
+}
+
+static bool parseSummary(const String &body, UsageData &u) {
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok) return false;
+  if ((doc["v"] | 0) != 1) return false;
+  u = UsageData{};
+  u.valid = true;
+  u.receivedAtMs = millis();
+  u.machineCount = doc["machines"].as<JsonArrayConst>().size();
+
+  JsonVariantConst cl = doc["claude"]["limits"];
+  if (!cl.isNull()) {
+    u.hasClaudeLimits = true;
+    u.claudeLimitsAge = cl["ageSec"] | 0;
+    parseWindow(cl["session"], u.session);
+    parseWindow(cl["weekly"], u.weekly);
+    for (JsonObjectConst e : cl["extra"].as<JsonArrayConst>()) {
+      if (u.extraCount >= 3) break;
+      auto &slot = u.extras[u.extraCount];
+      snprintf(slot.label, sizeof(slot.label), "%s", (const char *)(e["label"] | "other"));
+      parseWindow(e, slot.w);
+      u.extraCount++;
+    }
+  }
+  JsonVariantConst tk = doc["claude"]["tokens"];
+  if (!tk.isNull()) {
+    u.hasTokens = true;
+    u.tokensAge = tk["ageSec"] | 0;
+    parseBucket(tk["today"], u.today); parseBucket(tk["week"], u.week);
+    parseBucket(tk["month"], u.month); parseBucket(tk["allTime"], u.allTime);
+    u.costMonth = tk["costUsd"]["month"] | 0.0f;
+    u.costAllTime = tk["costUsd"]["allTime"] | 0.0f;
+  }
+  JsonVariantConst cx = doc["codex"]["limits"];
+  if (!cx.isNull()) {
+    u.hasCodex = true;
+    u.codexAge = cx["ageSec"] | 0;
+    parseWindow(cx["fiveHour"], u.cxFive);
+    parseWindow(cx["weekly"], u.cxWeekly);
+    snprintf(u.cxPlan, sizeof(u.cxPlan), "%s", (const char *)(cx["plan"] | ""));
+  }
+  JsonVariantConst cp = doc["copilot"]["quota"];
+  if (!cp.isNull()) {
+    u.hasCopilot = true;
+    u.copilotAge = cp["ageSec"] | 0;
+    u.cpUsed = cp["used"] | 0LL;
+    u.cpIncluded = cp["included"] | 0LL;
+    u.cpPct = cp["pctUsed"] | 0.0f;
+    u.cpHasReset = !cp["resetsInSec"].isNull();
+    u.cpResetsInSec = cp["resetsInSec"] | 0;
+    snprintf(u.cpPlan, sizeof(u.cpPlan), "%s", (const char *)(cp["plan"] | ""));
+  }
+  return true;
+}
+
+static void netTask(void *) {
+  for (;;) {
+    if (wifi_mgr_state() != WifiState::CONNECTED) {
+      if (status != NetStatus::NEVER) status = NetStatus::WIFI_DOWN;
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      continue;
+    }
+    {
+      WiFiClientSecure client;
+      client.setCACert(RELAY_ROOT_CAS);
+      HTTPClient http;
+      http.setTimeout(12000);
+      http.setConnectTimeout(8000);
+      if (http.begin(client, String(RELAY_URL) + "/v1/summary")) {
+        http.addHeader("Authorization", String("Bearer ") + RELAY_READ_TOKEN);
+        int code = http.GET();
+        if (code == 200) {
+          UsageData fresh;
+          if (parseSummary(http.getString(), fresh)) {
+            xSemaphoreTake(mutex, portMAX_DELAY);
+            shared = fresh;
+            dirty = true;
+            xSemaphoreGive(mutex);
+            status = NetStatus::OK;
+            lastOkMs = millis();
+          } else {
+            status = NetStatus::PARSE_ERROR;
+          }
+        } else if (code == 401) {
+          status = NetStatus::AUTH_ERROR;
+        } else {
+          status = NetStatus::HTTP_ERROR;
+        }
+        http.end();
+      } else {
+        status = NetStatus::HTTP_ERROR;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+  }
+}
+
+void net_start() {
+  mutex = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, 0); // core 0; LVGL stays on core 1
+}
+
+bool net_take_update(UsageData &out) {
+  bool got = false;
+  xSemaphoreTake(mutex, portMAX_DELAY);
+  if (dirty) { out = shared; dirty = false; got = true; }
+  xSemaphoreGive(mutex);
+  return got;
+}
+
+NetStatus net_status() { return status; }
+uint32_t net_last_ok_ms() { return lastOkMs; }
