@@ -1,13 +1,16 @@
 #include <Arduino.h>
 #include <lvgl.h>
+#include <time.h>
 #include "display.h"
 #include "touch.h"
 #include "lvgl_port.h"
+#include "wifi_mgr.h"
 
 static int taps = 0;
 
 void setup() {
   Serial.begin(115200);
+  wifi_mgr_init();
   display_init();
   touch_init();
   lvgl_port_init();
@@ -43,5 +46,16 @@ void setup() {
 
 void loop() {
   lv_timer_handler();
+  wifi_mgr_tick();
+
+  static uint32_t lastPrint = 0;
+  if (millis() - lastPrint > 2000) {
+    lastPrint = millis();
+    time_t t = time(nullptr); struct tm tm; localtime_r(&t, &tm);
+    Serial.printf("wifi state=%d ssid=%s ip=%s rssi=%d time=%02d:%02d:%02d\n",
+                  (int)wifi_mgr_state(), wifi_mgr_ssid().c_str(), wifi_mgr_ip().c_str(),
+                  wifi_mgr_rssi(), tm.tm_hour, tm.tm_min, tm.tm_sec);
+  }
+
   delay(5);
 }
