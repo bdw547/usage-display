@@ -113,8 +113,11 @@ static void onScanResults(std::vector<std::pair<String, int>> &nets) {
       // later via lv_async_call(), entirely outside this call stack, rather than synchronously
       // unwinding through an in-flight ancestor delete triggered partway through handling it.
       // NO manual delete of ssid here either way — the DELETE callback owns freeing it.
-      lv_obj_delete_async(scanModal);
-      scanModal = nullptr;
+      // Fix round 3 (Critical): guard against a double-tap landing in the ~5-10ms window before
+      // the deferred delete above actually runs — without this, a second tap re-enters here with
+      // scanModal already null, and lv_obj_delete_async(nullptr) trips LV_ASSERT_NULL -> the
+      // silent while(1) handler (same class of hang as the bug this round is fixing).
+      if (scanModal) { lv_obj_delete_async(scanModal); scanModal = nullptr; }
     }, LV_EVENT_CLICKED, nullptr);
   }
 }
