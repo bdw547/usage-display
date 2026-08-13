@@ -16,6 +16,7 @@ function snap(machineId, over = {}) {
         session: { pct: 13, resetsAt: '2026-08-13T19:30:00Z' },
         weekly: { pct: 51, resetsAt: '2026-08-16T09:00:00Z' },
         extra: [],
+        extraUsage: { usedCreditsUsd: 12.34 },
       },
       tokens: {
         computedAt: iso(30),
@@ -46,6 +47,7 @@ test('single machine: summary carries ageSec and resetsInSec, no ISO leaves', ()
   assert.equal(s.claude.limits.ageSec, 60);
   assert.equal(s.claude.limits.session.pct, 13);
   assert.equal(s.claude.limits.session.resetsInSec, relSeconds('2026-08-13T19:30:00Z', NOW));
+  assert.equal(s.claude.limits.extraUsage.usedCreditsUsd, 12.34);
   assert.equal(s.claude.tokens.ageSec, 30);
   assert.equal(s.claude.tokens.today.total, 1350);
   assert.equal(s.codex.limits.weekly.pct, 27);

@@ -16,6 +16,7 @@ test('prefers the limits[] array: session, weekly_all, scoped extras', () => {
   assert.equal(n.extra[0].pct, 30);
   assert.equal(n.extra[1].pct, 62);
   for (const e of n.extra) assert.equal(typeof e.label, 'string');
+  assert.equal(n.extraUsage.usedCreditsUsd, 12.34);
 });
 
 test('falls back to five_hour/seven_day when limits[] is absent', () => {
@@ -31,4 +32,5 @@ test('handles a fully empty body without throwing', () => {
   assert.equal(n.session, null);
   assert.equal(n.weekly, null);
   assert.deepEqual(n.extra, []);
+  assert.equal(n.extraUsage, null);
 });

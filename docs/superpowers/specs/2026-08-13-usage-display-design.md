@@ -234,3 +234,24 @@ first successful join, unlock and slide to the Claude page.
 - **RGB-panel + PSRAM contention artifacts** (known S3 quirk): use vendor-proven
   timings from the community config; if tearing appears, drop pixel clock and/or
   enable bounce buffers — well-trodden fixes.
+
+## 14. Post-v1 addenda (2026-08-13)
+
+- **Usage credits (additive schema field).** The Anthropic `/api/oauth/usage`
+  response carries `extra_usage: {is_enabled, used_credits, currency,
+  decimal_places, …}` — pay-as-you-go credits spent beyond the plan's included
+  usage. The collector normalizes this to `claude.limits.extraUsage.usedCreditsUsd`
+  (dollars, converted from minor units via `used_credits / 10**decimal_places`)
+  and the relay passes it through unchanged in the merged summary
+  (freshest-machine-wins, same as the rest of `claude.limits`). This is a purely
+  additive field on the schema v1 contract (§6): `null` when the vendor omits
+  `extra_usage`, so older collector snapshots and any client that doesn't know
+  about the field keep working unmodified. Firmware parses it tolerantly and
+  renders "Usage credits: $X.XX spent" on the Claude screen.
+- **UI layout change (Claude tokens page).** During M6 hardware verification,
+  user requested moving the Claude token totals off the horizontal swipe strip:
+  the tileview is now **4 horizontal pages** (Claude, Codex, Copilot, Settings)
+  with page dots, and the Claude tokens view is reached by swiping **up**
+  vertically from the Claude page instead of occupying a 5th horizontal slot.
+  Rationale: tokens are a drill-down detail of Claude usage, not a peer
+  top-level category alongside the three vendor screens.

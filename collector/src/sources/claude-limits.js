@@ -20,6 +20,9 @@ export function normalizeAnthropicUsage(body, fetchedAt) {
       else out.extra.push({ label: scopeLabel(l), ...w });
     }
   }
+  out.extraUsage = body?.extra_usage
+    ? { usedCreditsUsd: Math.round(((body.extra_usage.used_credits ?? 0) / Math.pow(10, body.extra_usage.decimal_places ?? 2)) * 100) / 100 }
+    : null;
   if (!out.session && body?.five_hour?.utilization != null) {
     out.session = { pct: body.five_hour.utilization, resetsAt: body.five_hour.resets_at ?? null };
   }

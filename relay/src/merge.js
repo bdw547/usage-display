@@ -53,6 +53,7 @@ export function mergeSnapshots(snapshots, nowMs) {
         session: relWindow(cl.session, nowMs),
         weekly: relWindow(cl.weekly, nowMs),
         extra: (cl.extra ?? []).map((e) => ({ label: e.label, ...relWindow(e, nowMs) })),
+        extraUsage: cl.extraUsage ?? null,
       }
     : null;
 
