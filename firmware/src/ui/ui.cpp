@@ -1,6 +1,7 @@
 // firmware/src/ui/ui.cpp
 #include "ui.h"
 #include "screens.h"
+#include "settings.h"
 #include "theme.h"
 #include "board.h"     // SCREEN_W/H (include/ is on the include path)
 #include "../wifi_mgr.h"
@@ -16,6 +17,7 @@ static lv_obj_t *tileClaude, *tileTokens, *tileCodex, *tileCopilot, *tileSetting
 static lv_obj_t *sbWifi, *sbClock, *sbDot, *sbMachines, *banner;
 static lv_obj_t *dots[4]; // one per COLUMN, not per tile — Claude and Tokens share column 0
 static UsageData current;
+static bool swipeLocked = false; // Task 8: first-boot lock, set true by main.cpp when no WiFi is saved yet
 
 // Column of the active tile; Claude and Tokens (same column, different row) map to the same dot.
 // Finding 7: lv_tileview's tile_act is only ever set by lv_tileview_set_tile()/_by_index() or a
@@ -96,7 +98,6 @@ void ui_init() {
   screen_codex_build(tileCodex);
   screen_copilot_build(tileCopilot);
   screen_tokens_build(tileTokens);
-  // tileSettings built in Task 8
   lv_obj_add_event_cb(tileview, [](lv_event_t *) { updateDots(); }, LV_EVENT_VALUE_CHANGED, nullptr);
 
   // --- page dots: 4, one per column (row changes within column 0 don't move them) ---
@@ -113,6 +114,8 @@ void ui_init() {
   // correctly overrides this when there's really nothing saved to show yet.
   lv_tileview_set_tile_by_index(tileview, 0, 0, LV_ANIM_OFF);
   updateDots();
+
+  settings_build(ui_settings_parent()); // Task 8: settings/WiFi page built inside the col-3 tile
 }
 
 void ui_apply(const UsageData &u) {
@@ -152,7 +155,20 @@ void ui_tick_1s() {
   else lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
   // live countdowns between polls
   screens_tick_1s(current);
+  // Task 8: the first-boot swipe lock releases itself the moment a network is saved
+  if (swipeLocked && wifi_mgr_has_saved()) ui_set_swipe_enabled(true);
+  settings_tick();
 }
 
 void ui_goto_settings() { lv_tileview_set_tile_by_index(tileview, 3, 0, LV_ANIM_ON); updateDots(); }
 lv_obj_t *ui_settings_parent() { return tileSettings; }
+
+// Task 8: swiping is implemented as tileview scrolling, so gating it is inverted from the naive
+// reading of "enabled" — clearing SCROLLABLE is what blocks the swipe gesture (lock), adding it
+// back is what permits it again (unlock). Only touch/gesture-driven paging is affected; programmatic
+// navigation via lv_tileview_set_tile_by_index() (i.e. ui_goto_settings()) still works while locked.
+void ui_set_swipe_enabled(bool en) {
+  if (en) lv_obj_add_flag(tileview, LV_OBJ_FLAG_SCROLLABLE);
+  else lv_obj_clear_flag(tileview, LV_OBJ_FLAG_SCROLLABLE);
+  swipeLocked = !en;
+}

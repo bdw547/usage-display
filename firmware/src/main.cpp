@@ -19,7 +19,7 @@ void setup() {
   ui_init();
   Serial.printf("heap: internal=%u psram=%u\n", ESP.getFreeHeap(), ESP.getFreePsram());
   net_start();
-  if (!wifi_mgr_has_saved()) ui_goto_settings(); // first boot: land on setup
+  if (!wifi_mgr_has_saved()) { ui_goto_settings(); ui_set_swipe_enabled(false); } // first boot: land on setup, lock swipe until a network is saved
   Serial.println("boot complete");
 }
 
