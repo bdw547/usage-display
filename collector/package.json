@@ -1,0 +1,7 @@
+{
+  "name": "usage-collector",
+  "private": true,
+  "type": "module",
+  "bin": { "usage-collector": "src/index.js" },
+  "scripts": { "test": "node --test 'test/**/*.test.js'" }
+}
