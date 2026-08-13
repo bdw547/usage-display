@@ -35,7 +35,11 @@ static void loadCreds() {
 #ifdef DEV_WIFI_SSID
   bool have = false;
   for (auto &c : creds) if (c.ssid == DEV_WIFI_SSID) have = true;
-  if (!have) { creds.insert(creds.begin(), {DEV_WIFI_SSID, DEV_WIFI_PASS}); persist(); }
+  if (!have) {
+    creds.insert(creds.begin(), {DEV_WIFI_SSID, DEV_WIFI_PASS});
+    while (creds.size() > MAX_NETWORKS) creds.pop_back();
+    persist();
+  }
 #endif
 }
 
