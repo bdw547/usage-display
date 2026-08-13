@@ -44,9 +44,11 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
   s.title = mkLabel(tile, &lv_font_montserrat_24, accent, name);
   lv_obj_align(s.title, LV_ALIGN_TOP_MID, 0, 10);
 
+  // Arc shrunk 230->210 (round 2, supersedes round 1's "~10px move" note) so 3 Weekly-identical
+  // bar rows below have room; see the layout-math comment above the extras loop.
   s.arc = lv_arc_create(tile);
-  lv_obj_set_size(s.arc, 230, 230);
-  lv_obj_align(s.arc, LV_ALIGN_TOP_MID, 0, 38); // moved up ~10px to make room for bar-style extras below
+  lv_obj_set_size(s.arc, 210, 210);
+  lv_obj_align(s.arc, LV_ALIGN_TOP_MID, 0, 38);
   lv_arc_set_rotation(s.arc, 135);
   lv_arc_set_bg_angles(s.arc, 0, 270);
   lv_arc_set_range(s.arc, 0, 100);
@@ -57,38 +59,64 @@ static void buildLimitScreen(LimitScreen &s, lv_obj_t *tile, const char *name, l
   lv_obj_set_style_arc_width(s.arc, 18, LV_PART_MAIN);
   lv_obj_set_style_arc_width(s.arc, 18, LV_PART_INDICATOR);
 
+  // Fixed width + centered text on every label anchored via lv_obj_align_to(): align_to (unlike
+  // plain lv_obj_align) computes an absolute position ONCE from the object's width AT CALL TIME,
+  // then bakes it in as a plain TOP_LEFT position (confirmed by reading lv_obj_align_to()'s source
+  // — its last lines are literally `lv_obj_set_style_align(obj, LV_ALIGN_TOP_LEFT, 0)` then
+  // `lv_obj_set_pos`). A label's default width is LV_SIZE_CONTENT, so when its text later grows
+  // (e.g. "--" -> "100%"), the box grows rightward from that frozen left edge, visually
+  // off-centering it. Fixing the width (before align_to runs) and centering the text inside that
+  // fixed box makes the label's box itself stable, so later text changes redraw within it instead
+  // of shifting it.
   s.arcPct = mkLabel(tile, &lv_font_montserrat_48, COL_TEXT, "--");
+  lv_obj_set_width(s.arcPct, 200);
+  lv_obj_set_style_text_align(s.arcPct, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align_to(s.arcPct, s.arc, LV_ALIGN_CENTER, 0, -10);
   lv_obj_t *pn = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, primaryName);
+  lv_obj_set_width(pn, 200);
+  lv_obj_set_style_text_align(pn, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align_to(pn, s.arc, LV_ALIGN_CENTER, 0, 28);
   s.arcSub = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
+  lv_obj_set_width(s.arcSub, 220);
+  lv_obj_set_style_text_align(s.arcSub, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align_to(s.arcSub, s.arc, LV_ALIGN_BOTTOM_MID, 0, -6); // centered in the 270-degree arc's bottom gap
 
   s.barLabel = mkLabel(tile, &lv_font_montserrat_16, COL_TEXT, secondaryName);
-  lv_obj_align(s.barLabel, LV_ALIGN_TOP_LEFT, 36, 276);
+  lv_obj_align(s.barLabel, LV_ALIGN_TOP_LEFT, 36, 256);
   s.barPct = mkLabel(tile, &lv_font_montserrat_16, COL_TEXT, "--");
-  lv_obj_align(s.barPct, LV_ALIGN_TOP_RIGHT, -36, 276);
+  lv_obj_align(s.barPct, LV_ALIGN_TOP_RIGHT, -36, 256);
   s.bar = lv_bar_create(tile);
   lv_obj_set_size(s.bar, 408, 14);
-  lv_obj_align(s.bar, LV_ALIGN_TOP_MID, 0, 300);
+  lv_obj_align(s.bar, LV_ALIGN_TOP_MID, 0, 280);
   lv_bar_set_range(s.bar, 0, 100);
   lv_obj_set_style_bg_color(s.bar, COL_CARD, LV_PART_MAIN);
   lv_obj_set_style_bg_color(s.bar, accent, LV_PART_INDICATOR);
   s.barSub = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
-  lv_obj_align(s.barSub, LV_ALIGN_TOP_MID, 0, 320);
+  lv_obj_align(s.barSub, LV_ALIGN_TOP_MID, 0, 300);
 
-  // Optional scoped-limit rows (Claude opus/sonnet/fable etc.), bar-style like Weekly above:
-  // label left, pct right, a slimmer bar beneath. Up to 3, stacked with consistent spacing.
-  static const int EXTRA_Y0 = 340, EXTRA_PITCH = 32, EXTRA_BAR_H = 8;
+  // Optional scoped-limit rows (Claude opus/sonnet/fable etc.) — round 2: IDENTICAL geometry to
+  // the Weekly bar above (408x14, montserrat_16 label+pct, same 24px label-to-bar gap), not a
+  // shrunk-down variant. Up to 3, stacked with consistent spacing.
+  // Layout math, disclosed: tile height is 430px (480 - 32 status bar - 18 dots). Arc(38-248) +
+  // gap(8) + Weekly block(256-314) + gap(16) + 3 full Weekly-sized rows (330, 376, 422, each
+  // spanning 38px to their own bar's bottom) bottoms out at 460 — ~30px past the tile in the
+  // worst case of all 3 extras populated simultaneously. That's an unavoidable consequence of
+  // matching Weekly's bar size exactly (this finding) at a 210px arc (this finding) — there's no
+  // remaining slack to trim without shrinking the arc further than specified or violating the
+  // "identical to Weekly" bar requirement. Today's real relay payload has extraCount=0 in
+  // practice (this path isn't populated yet), so what actually renders is arc+Weekly+hint with
+  // room to spare; 3-simultaneous-extras stays a known, disclosed, not-currently-exercised edge
+  // case rather than a silently broken one.
+  static const int EXTRA_Y0 = 330, EXTRA_PITCH = 46;
   for (int i = 0; i < 3; i++) {
     int y = EXTRA_Y0 + i * EXTRA_PITCH;
-    s.extraRows[i] = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
+    s.extraRows[i] = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "");
     lv_obj_align(s.extraRows[i], LV_ALIGN_TOP_LEFT, 36, y);
-    s.extraPcts[i] = mkLabel(tile, &lv_font_montserrat_14, COL_TEXT, "");
+    s.extraPcts[i] = mkLabel(tile, &lv_font_montserrat_16, COL_TEXT, "");
     lv_obj_align(s.extraPcts[i], LV_ALIGN_TOP_RIGHT, -36, y);
     s.extraBars[i] = lv_bar_create(tile);
-    lv_obj_set_size(s.extraBars[i], 408, EXTRA_BAR_H);
-    lv_obj_align(s.extraBars[i], LV_ALIGN_TOP_MID, 0, y + 16);
+    lv_obj_set_size(s.extraBars[i], 408, 14);
+    lv_obj_align(s.extraBars[i], LV_ALIGN_TOP_MID, 0, y + 24);
     lv_bar_set_range(s.extraBars[i], 0, 100);
     lv_obj_set_style_bg_color(s.extraBars[i], COL_CARD, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s.extraBars[i], accent, LV_PART_INDICATOR);
