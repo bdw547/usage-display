@@ -12,8 +12,10 @@ test('prefers the limits[] array: session, weekly_all, scoped extras', () => {
   assert.equal(n.session.pct, 13);
   assert.ok(n.session.resetsAt.startsWith('2026-08-13T19:30:00'));
   assert.equal(n.weekly.pct, 51);
-  assert.deepEqual(n.extra.map((e) => e.label), ['opus']);
+  assert.deepEqual(n.extra.map((e) => e.label), ['opus', 'fable']);
   assert.equal(n.extra[0].pct, 30);
+  assert.equal(n.extra[1].pct, 62);
+  for (const e of n.extra) assert.equal(typeof e.label, 'string');
 });
 
 test('falls back to five_hour/seven_day when limits[] is absent', () => {

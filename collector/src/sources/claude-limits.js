@@ -2,6 +2,13 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+function scopeLabel(l) {
+  if (typeof l.scope === 'string' && l.scope) return l.scope;
+  const dn = l.scope?.model?.display_name;
+  if (typeof dn === 'string' && dn) return dn.toLowerCase();
+  return String(l.kind ?? 'other').replace(/^weekly_/, '');
+}
+
 export function normalizeAnthropicUsage(body, fetchedAt) {
   const out = { fetchedAt, session: null, weekly: null, extra: [] };
   if (Array.isArray(body?.limits) && body.limits.length > 0) {
@@ -10,7 +17,7 @@ export function normalizeAnthropicUsage(body, fetchedAt) {
       const w = { pct: l.percent, resetsAt: l.resets_at ?? null };
       if (l.kind === 'session') out.session = w;
       else if (l.kind === 'weekly_all') out.weekly = w;
-      else out.extra.push({ label: l.scope ?? String(l.kind ?? 'other').replace(/^weekly_/, ''), ...w });
+      else out.extra.push({ label: scopeLabel(l), ...w });
     }
   }
   if (!out.session && body?.five_hour?.utilization != null) {
