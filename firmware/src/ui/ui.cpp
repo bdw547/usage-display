@@ -16,6 +16,10 @@ static lv_obj_t *tileview;
 static lv_obj_t *tileClaude, *tileTokens, *tileCodex, *tileCopilot, *tileSettings;
 static lv_obj_t *sbWifi, *sbClock, *sbDot, *sbMachines, *banner;
 static lv_obj_t *dots[4]; // one per COLUMN, not per tile — Claude and Tokens share column 0
+// Tokens-page polish: Tokens is the only row-1 tile, so the horizontal carousel — and therefore the
+// four dots — means nothing while it is showing. On that tile the dots are swapped for an up-chevron
+// in the same strip: the mirror of Claude's down-chevron, which is what hints the way IN.
+static lv_obj_t *upHint;
 static UsageData current;
 static bool swipeLocked = false; // Task 8: first-boot lock, set true by main.cpp when no WiFi is saved yet
 
@@ -36,10 +40,22 @@ static int activeColumn() {
   return 0;
 }
 
+// Drives the whole bottom strip: dots for any row-0 tile, up-chevron for Tokens. Called from the
+// tileview's scroll-end (LV_EVENT_VALUE_CHANGED) handler, from the explicit set-tile calls, and once
+// at the end of ui_init(), so every route into and out of Tokens updates the affordance.
 static void updateDots() {
   int col = activeColumn();
-  for (int i = 0; i < 4; i++)
-    lv_obj_set_style_bg_color(dots[i], i == col ? COL_TEXT : COL_CARD, 0);
+  bool onTokens = lv_tileview_get_tile_active(tileview) == tileTokens;
+  for (int i = 0; i < 4; i++) {
+    if (onTokens) {
+      lv_obj_add_flag(dots[i], LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_clear_flag(dots[i], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_style_bg_color(dots[i], i == col ? COL_TEXT : COL_CARD, 0);
+    }
+  }
+  if (onTokens) lv_obj_clear_flag(upHint, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_add_flag(upHint, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_init() {
@@ -98,6 +114,17 @@ void ui_init() {
     lv_obj_set_style_border_width(dots[i], 0, 0);
     lv_obj_align(dots[i], LV_ALIGN_BOTTOM_MID, (2 * i - 3) * 9, -5);
   }
+  // Tokens affordance, sharing the dot strip. Geometry: a dot's box is 8px tall at BOTTOM_MID -5, so
+  // it spans y 467..475 on the 480px screen and its centre line is 471. A montserrat_14 label is 16px
+  // tall (compiled line_height), so BOTTOM_MID -1 spans 463..479 — same centre line as the dots, and
+  // entirely below the tileview (which ends at 32+430 = 462), so it never overlaps tile content.
+  // Created after the dots and before the first updateDots() call below, which sets its visibility.
+  upHint = lv_label_create(scr);
+  lv_obj_set_style_text_font(upHint, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(upHint, COL_MUTED, 0);
+  lv_label_set_text(upHint, LV_SYMBOL_UP); // FontAwesome glyph built into LVGL's fonts — no new font data
+  lv_obj_align(upHint, LV_ALIGN_BOTTOM_MID, 0, -1);
+  lv_obj_add_flag(upHint, LV_OBJ_FLAG_HIDDEN);
   // Finding 7: explicitly land on Claude (col 0) before the first updateDots() call, rather than
   // leaving tile_act at its zero-initialized NULL — see activeColumn()'s comment. main.cpp's
   // first-boot-no-creds call to ui_goto_settings() still runs after ui_init() returns and

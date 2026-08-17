@@ -423,11 +423,20 @@ void screen_tokens_build(lv_obj_t *tile) {
   lv_obj_align(tkBig, LV_ALIGN_TOP_MID, 0, 122);
   tkBreak = mkLabel(tile, &lv_font_montserrat_14, COL_MUTED, "");
   lv_obj_align(tkBreak, LV_ALIGN_TOP_MID, 0, 186);
+  // Tokens-page polish (user photo): the est-value line was overlapping the "All time" card.
+  // Arithmetic, all verified against the COMPILED font line-heights (montserrat_16 = 18,
+  // montserrat_14 = 16) and the 430px tile (480 - 32 status bar - 18 dot strip):
+  //   tkBreak (montserrat_14) 186..202
+  //   card i  top = 222 + 54i, height 44  -> 222..266, 276..320, 330..374   (20px below tkBreak)
+  //   tkCost  (montserrat_16) BOTTOM_MID -28 -> 384..402                    (10px below card 2)
+  //   tile bottom 430                                                       (28px below tkCost)
+  // The card stack moved up 4px (was 226) purely to widen the tkCost gap from 6px to 10px.
+  static const int TK_CARD_Y0 = 222, TK_CARD_PITCH = 54;
   static const char *names[3] = {"This week", "This month", "All time"};
   for (int i = 0; i < 3; i++) {
     lv_obj_t *card = lv_obj_create(tile);
     lv_obj_set_size(card, 408, 44);
-    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 226 + i * 54);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, TK_CARD_Y0 + i * TK_CARD_PITCH);
     lv_obj_set_style_bg_color(card, COL_CARD, 0);
     lv_obj_set_style_border_width(card, 0, 0);
     lv_obj_set_style_radius(card, 10, 0);
@@ -438,7 +447,7 @@ void screen_tokens_build(lv_obj_t *tile) {
     lv_obj_align(tkRowVals[i], LV_ALIGN_RIGHT_MID, -6, 0);
   }
   tkCost = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "");
-  lv_obj_align(tkCost, LV_ALIGN_BOTTOM_MID, 0, -46);
+  lv_obj_align(tkCost, LV_ALIGN_BOTTOM_MID, 0, -28); // was -46, which put it inside the All-time card
   tkNa = mkLabel(tile, &lv_font_montserrat_16, COL_MUTED, "no data yet");
   lv_obj_align(tkNa, LV_ALIGN_CENTER, 0, 0);
   tkStale = mkLabel(tile, &lv_font_montserrat_14, COL_WARN, "");
