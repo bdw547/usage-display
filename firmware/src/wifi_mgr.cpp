@@ -136,7 +136,10 @@ void wifi_mgr_tick() {
   // ---- F3: consume the event flags on the loop task, where every other writer lives ----
   if (evGotIp) {
     evGotIp = false;
-    evDisconnected = false; // a disconnect that preceded this association is stale news
+    // R1: do NOT clear evDisconnected here. The two flags can be raised in either order within one
+    // tick, and clearing the disconnect on the strength of a GOT_IP throws away a REAL drop that
+    // landed after the association. The asymmetry is what matters: a spurious extra disconnect
+    // costs one harmless rescan, a swallowed real one costs the connection until reboot.
     if (state != WifiState::CONNECTED) setState(WifiState::CONNECTED);
     clearFailures(targetSsid); // F4: a good connect wipes the SSID's failure history
     // configTzTime() is idempotent-but-expensive (restarts SNTP, setenv/tzset). Once is enough:
@@ -154,6 +157,17 @@ void wifi_mgr_tick() {
   }
 
   switch (state) {
+    case WifiState::CONNECTED:
+      // R1 liveness backstop: never trust the event stream alone to get us OUT of CONNECTED. If a
+      // DISCONNECTED event is dropped (queue full, flag overwritten, event delivered while the flag
+      // was momentarily cleared), the old code would sit in CONNECTED for ever — the status bar
+      // showing a network that is gone, netTask polling a dead link, and no rescan ever scheduled.
+      // The radio's own status is the ground truth and costs one cheap read per tick.
+      if (WiFi.status() != WL_CONNECTED) {
+        setState(WifiState::OFFLINE);
+        nextActionAt = now + 3000;
+      }
+      break;
     case WifiState::SCANNING: {
       int n = WiFi.scanComplete();
       if (n == WIFI_SCAN_RUNNING) {

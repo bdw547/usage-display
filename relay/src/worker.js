@@ -4,7 +4,12 @@ const WEEK_SECONDS = 604800;
 const MAX_BODY_BYTES = 32 * 1024;               // B5
 const MACHINE_ID_RE = /^[\w.-]{1,64}$/;         // B5
 const TOKEN_WRITE_MIN_MS = 150_000;             // B4: token-only churn costs at most one write / 150s
-const HEARTBEAT_MS = 300_000;                   // B4: refresh age + 7-day TTL when nothing changed
+// R3a: 300_000 -> 240_000. The firmware's per-section stale chips need the machine's reported age to
+// refresh comfortably inside their thresholds (the tightest is Claude tokens at 450s); a 300s
+// heartbeat left almost no headroom once the device's own 20s poll and the token write deferral
+// stacked on top, so idle-but-healthy data could trip the chip. Costs ~+70 writes/day (~360/day
+// worst case for one idle machine), still well inside the 1000/day free-tier write cap.
+const HEARTBEAT_MS = 240_000;                   // B4: refresh age + 7-day TTL when nothing changed
 const LIST_CACHE_MS = 300_000;                  // B4: KV list() is capped at 1000/day on the free plan
 
 const json = (obj, status = 200) =>
@@ -135,6 +140,12 @@ export default {
 
       snap.receivedAt = new Date(nowMs).toISOString();
       await env.USAGE_KV.put(key, JSON.stringify(snap), { expirationTtl: WEEK_SECONDS });
+      // R4: the key list is cached for LIST_CACHE_MS, so a machine that has never been seen before
+      // would otherwise stay invisible to /v1/summary for up to 5 minutes after its first push —
+      // exactly the moment someone is watching to see whether a new collector works. Invalidate on
+      // the new-machine write only (after the put succeeded): known machines are already re-read
+      // every summary, so they never need this, and one extra list() per new machine is free.
+      if (decision.reason === 'new-machine') _resetListCache();
       return json({ ok: true });
     }
 

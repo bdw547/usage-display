@@ -10,5 +10,10 @@ export function acceptPollResult(cached, next) {
   if (!cached || typeof cached !== 'object') return true;
   const cachedAt = Date.parse(cached.fetchedAt ?? '');
   if (Number.isNaN(cachedAt)) return true; // whatever we hold is unusable anyway
-  return nextAt >= cachedAt;
+  // R2: the monotonic guard above must not become a permanent stall. If the cached stamp is in the
+  // FUTURE — a machine whose clock was ahead and has since been corrected (NTP step, VM resume,
+  // manual fix), or a vendor stamp minted by a fast clock — then every honest result from now on
+  // looks "older" and the section would freeze at the future-stamped value until it aged out.
+  // Reality outranks a stamp that cannot exist yet: accept when the cache is future-dated.
+  return nextAt >= cachedAt || cachedAt > Date.now();
 }

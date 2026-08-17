@@ -143,7 +143,10 @@ test('B4: persistDecision — unchanged, tokens-only and value changes', () => {
   assert.equal(persistDecision(stored, withTokens(11, 'b'), t0 + 5_000).put, false, 'tokens-only change inside 150s is deferred');
   assert.equal(persistDecision(stored, withTokens(11, 'b'), t0 + 150_000).put, true, 'tokens-only change persists once 150s have passed');
   assert.equal(persistDecision(stored, { ...stored, claude: { ...stored.claude, limits: { fetchedAt: 'z', session: { pct: 5 } } } }, t0 + 5_000).put, true, 'a limits/quota value change always persists');
-  assert.equal(persistDecision(stored, { ...stored, sentAt: 'later' }, t0 + 300_000).put, true, 'heartbeat write refreshes age + TTL when nothing changes');
+  // R3a: the heartbeat window is 240s (was 300s) so machines[].ageSec refreshes inside the
+  // firmware's tightest stale-chip threshold (Claude tokens, 450s).
+  assert.equal(persistDecision(stored, { ...stored, sentAt: 'later' }, t0 + 239_000).put, false, 'still inside the heartbeat window');
+  assert.equal(persistDecision(stored, { ...stored, sentAt: 'later' }, t0 + 240_000).put, true, 'heartbeat write refreshes age + TTL when nothing changes');
 });
 
 test('B4: repeated identical pushes do not write to KV', async () => {
@@ -162,8 +165,8 @@ test('B4: repeated identical pushes do not write to KV', async () => {
   assert.equal(e.USAGE_KV.calls.put, 1, 'no second write');
   assert.equal(JSON.parse(e.USAGE_KV.store.get('machine:wsl-box')).receivedAt, receivedAt, 'stored entry untouched');
 
-  // ... until the heartbeat window elapses, which refreshes age and the 7-day TTL
-  t += 300_000;
+  // ... until the heartbeat window elapses (R3a: 240s), which refreshes age and the 7-day TTL
+  t += 240_000;
   await worker.fetch(push({ ...SNAP, sentAt: new Date(t).toISOString() }), e);
   assert.equal(e.USAGE_KV.calls.put, 2, 'heartbeat write');
 });
@@ -231,13 +234,32 @@ test('B4: KV.list is cached for 300s but per-machine values stay fresh', async (
   assert.ok(e.USAGE_KV.calls.get > getsAfterFirst, 'but every machine key is re-read');
   assert.equal(body.claude.tokens.today.total, 7, 'fresh values reach the device immediately');
 
-  // a brand-new machine appears once the list cache expires
+  // R4: a brand-new machine invalidates the list cache on its first write, so it appears on the
+  // very next summary instead of waiting out the ≤5 min cache window.
   await worker.fetch(push({ ...SNAP, machineId: 'b' }), e);
-  assert.equal((await (await worker.fetch(summary(), e)).json()).machines.length, 1, 'still one machine inside the cache window');
-  t += 300_000;
   const after = await (await worker.fetch(summary(), e)).json();
-  assert.equal(e.USAGE_KV.calls.list, 2, 'cache expired -> one more list');
-  assert.equal(after.machines.length, 2);
+  assert.equal(e.USAGE_KV.calls.list, 2, 'the new-machine put invalidated the cache -> one more list');
+  assert.equal(after.machines.length, 2, 'a new collector shows up immediately');
+
+  // ... and the cache is rebuilt, so the next summary inside the window costs no further list()
+  await worker.fetch(summary(), e);
+  assert.equal(e.USAGE_KV.calls.list, 2, 'still cached after the rebuild');
+});
+
+test('R4: a known machine re-writing does NOT invalidate the list cache', async () => {
+  reset();
+  let t = Date.parse('2026-08-13T16:00:00Z');
+  _setClock(() => t);
+  const e = env();
+  await worker.fetch(push({ ...SNAP, machineId: 'a' }), e);
+  await worker.fetch(summary(), e);
+  assert.equal(e.USAGE_KV.calls.list, 1);
+
+  // a value change on a machine we already list: written through, but the key list is unchanged
+  t += 5_000;
+  await worker.fetch(push({ ...SNAP, machineId: 'a', claude: { limits: { fetchedAt: 'z', session: { pct: 42 } }, tokens: null } }), e);
+  await worker.fetch(summary(), e);
+  assert.equal(e.USAGE_KV.calls.list, 1, 'no extra list() for a machine already in the cached list');
 });
 
 test('B4: the list cache is per-KV-namespace-content, not shared across tests', async () => {

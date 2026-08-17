@@ -160,8 +160,14 @@ Rules:
   per-scope weekly buckets (label from the vendor scope), `[]` when there are none.
 - `extraUsage` is pay-as-you-go credits beyond the plan (`null` when the vendor
   omits `extra_usage`); see §14.
-- Copilot `included: null` means *unlimited* (the vendor's `unlimited` flag), and
-  `pctUsed` is then `0`.
+- Copilot `included: null` is **ambiguous and must not be read as "unlimited"**: the
+  collector emits it both for a genuinely unlimited plan (the vendor's `unlimited`
+  flag, in which case `pctUsed` is forced to `0`) *and* whenever the vendor simply
+  omits the entitlement on a metered plan. Nothing downstream can tell the two
+  apart, so consumers must not label it — the firmware renders the used count on
+  its own, with no "/ total", no "(unlimited)" text and no percentage bar (see
+  `firmware/README.md`). `used: null` and `pctUsed: null` likewise render as "--",
+  never as `0`.
 - Every window's `resetsAt` is copied **verbatim from the vendor payload** — it is
   true absolute wall-clock time, not the collector's clock. `sentAt`, `fetchedAt`
   and `computedAt` are the only fields minted by the collector's clock.

@@ -19,10 +19,13 @@ sitting in the horizontal carousel.
   <5m, red otherwise) + connected machine count.
 - Per-source stale chips: each data screen (Claude, Codex, Copilot, Tokens) shows a small muted
   "as of Xm ago" chip, top-right, whenever that section's own effective age (the relay's reported
-  `ageSec` for that section, plus time held on-device since the last poll) exceeds 10 minutes —
-  e.g. the Codex screen will typically show this day-to-day, since its numbers only move when a
-  Codex session actually runs. Once a "resets in ..." countdown would itself have already lapsed
-  under a stale section, it renders "resets: --" instead of a frozen or misleading time.
+  `ageSec` for that section, plus time held on-device since the last poll) exceeds that source's
+  own threshold — Claude/Codex limits 15m, Copilot 25m, Claude tokens 7m30s (`STALE_*_SEC` in
+  `screens.cpp`). The thresholds are per-source deliberately: they are each source's real upstream
+  cadence plus the relay's write-deferral and heartbeat headroom, so the chip means "this data has
+  genuinely stopped arriving" rather than "this number is simply idle" — a chip that cries wolf
+  gets ignored. Once a "resets in ..." countdown would itself have already lapsed under a stale
+  section, it renders "resets: --" instead of a frozen or misleading time.
 - Claude's page also shows a "Usage credits: $X spent" row when the relay reports extra usage
   credits, and up to 3 extra scoped-limit rows (e.g. opus/sonnet) stacked below the Weekly bar.
 - Error banner (below the status bar), in priority order: "WiFi disconnected -

@@ -16,6 +16,19 @@ static void setHidden(lv_obj_t *obj, bool hidden) {
   else lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
 }
 
+// R3b: per-section stale thresholds, replacing one flat 600s for all four screens. 600s false-tripped
+// the chip on data that was simply IDLE rather than stale: each section's worst-case honest age is
+// its own vendor poll interval + the relay's KV persist deferral + heartbeat headroom, and those
+// differ per source. Numbers chosen against the shipped cadences (collector vendor polls, the
+// relay's 150s token write deferral and 240s heartbeat, and the device's 20s summary poll):
+//   Claude / Codex limits : 900s  — limits move only when a session runs; write-through on change
+//   Copilot quota         : 1500s — slowest upstream cadence by far (quota barely moves)
+//   Claude tokens         : 450s  — recomputed every collector cycle, so real staleness shows fast
+// A chip that cries wolf teaches the user to ignore it, which is worse than no chip at all.
+static const int32_t STALE_LIMITS_SEC = 900;
+static const int32_t STALE_COPILOT_SEC = 1500;
+static const int32_t STALE_TOKENS_SEC = 450;
+
 // ---------- shared limit-screen widget set ----------
 struct LimitScreen {
   lv_obj_t *title;
@@ -23,7 +36,8 @@ struct LimitScreen {
   lv_obj_t *barLabel, *bar, *barPct, *barSub; // secondary window (weekly)
   lv_obj_t *extraRows[3]; lv_obj_t *extraBars[3]; lv_obj_t *extraPcts[3];
   lv_obj_t *na;                           // "no data yet" overlay
-  lv_obj_t *staleChip;                    // "as of Xm ago" — top-right, shown when effAge > 600s
+  lv_obj_t *staleChip;                    // "as of Xm ago" — top-right, shown when effAge exceeds
+                                          // this section's own threshold (see STALE_*_SEC above)
 };
 static LimitScreen sClaude, sCodex;
 static lv_color_t claudeAccent, codexAccent;
@@ -158,10 +172,11 @@ static void blankLimitScreen(LimitScreen &s) {
 }
 
 static void applyLimitScreen(LimitScreen &s, bool has, const Window &prim, const Window &sec,
-                             const UsageData &u, int32_t elapsedSec, int32_t effAge) {
+                             const UsageData &u, int32_t elapsedSec, int32_t effAge,
+                             int32_t staleAfterSec) {
   if (!has) { blankLimitScreen(s); setHidden(s.na, false); return; }
   setHidden(s.na, true);
-  bool stale = effAge > 600;
+  bool stale = effAge > staleAfterSec;
   if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(s.staleChip, "as of %s ago", ageBuf); }
   setHidden(s.staleChip, !stale);
   char buf[32];
@@ -223,7 +238,7 @@ void screen_claude_build(lv_obj_t *tile) {
 void screen_claude_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
   int32_t effAge = u.claudeLimitsAge + el;
-  applyLimitScreen(sClaude, u.hasClaudeLimits, u.session, u.weekly, u, el, effAge);
+  applyLimitScreen(sClaude, u.hasClaudeLimits, u.session, u.weekly, u, el, effAge, STALE_LIMITS_SEC);
 
   // Findings 6+8 (round 3): verified against the COMPILED font line-heights (read straight from
   // the .c font files: montserrat_14 line_height=16, montserrat_16 line_height=18 — not
@@ -280,7 +295,7 @@ void screen_codex_build(lv_obj_t *tile) { codexAccent = COL_CODEX; buildLimitScr
 void screen_codex_apply(const UsageData &u) {
   int32_t el = (int32_t)((millis() - u.receivedAtMs) / 1000);
   int32_t effAge = u.codexAge + el;
-  applyLimitScreen(sCodex, u.hasCodex, u.cxFive, u.cxWeekly, u, el, effAge);
+  applyLimitScreen(sCodex, u.hasCodex, u.cxFive, u.cxWeekly, u, el, effAge, STALE_LIMITS_SEC);
   // F8: the plan suffix is part of the stale payload too — drop it when the section goes null.
   if (u.hasCodex && u.cxPlan[0]) lv_label_set_text_fmt(sCodex.title, "Codex - %s", u.cxPlan);
   else lv_label_set_text(sCodex.title, "Codex");
@@ -330,7 +345,7 @@ void screen_copilot_apply(const UsageData &u) {
   }
   setHidden(cpNa, true);
   int32_t effAge = u.copilotAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
-  bool stale = effAge > 600;
+  bool stale = effAge > STALE_COPILOT_SEC; // R3b
   if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(cpStale, "as of %s ago", ageBuf); }
   setHidden(cpStale, !stale);
   // F7 (honest nulls). Three separate unknowns, three separate renders:
@@ -442,7 +457,7 @@ void screen_tokens_apply(const UsageData &u) {
   }
   setHidden(tkNa, true);
   int32_t effAge = u.tokensAge + (int32_t)((millis() - u.receivedAtMs) / 1000);
-  bool stale = effAge > 600;
+  bool stale = effAge > STALE_TOKENS_SEC; // R3b
   if (stale) { char ageBuf[16]; fmt_age(effAge, ageBuf, sizeof(ageBuf)); lv_label_set_text_fmt(tkStale, "as of %s ago", ageBuf); }
   setHidden(tkStale, !stale);
   char b1[20], b2[20], b3[20];
