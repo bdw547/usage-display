@@ -887,7 +887,12 @@
 #define LV_USE_THEME_DEFAULT 1
 #if LV_USE_THEME_DEFAULT
     /** 0: Light mode; 1: Dark mode */
-    #define LV_THEME_DEFAULT_DARK 0
+    /* Readability fix: was 0, so lv_display_create()'s automatic theme init built the LIGHT palette
+     * and every stock widget (lists, keyboard, textarea, spinner) rendered white-on-white inside our
+     * dark UI. lvgl_port_init() re-inits the theme in dark mode with our accent colors right after
+     * the display is created; this keeps the auto-init itself dark so the light palette is never
+     * built at all. Change both together. */
+    #define LV_THEME_DEFAULT_DARK 1
 
     /** 1: Enable grow on press */
     #define LV_THEME_DEFAULT_GROW 1

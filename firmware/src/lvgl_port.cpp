@@ -60,6 +60,27 @@ void lvgl_port_init() {
   lv_display_set_flush_cb(disp, flush_cb);
   lv_display_set_buffers(disp, buf1, buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
+  // Readability fix (user hardware finding): every STOCK LVGL widget — lv_list rows, lv_keyboard,
+  // lv_textarea, the scan spinner, the modal containers' borders — was drawing in the default
+  // LIGHT theme (white panels, pale key glyphs) inside our hand-styled dark UI. lv_display_create()
+  // auto-inits the default theme (lv_display.c) using LV_THEME_DEFAULT_DARK, so the fix is systemic:
+  // re-init it in dark mode here, before ui_init() builds a single widget, instead of patching each
+  // widget's styles one at a time.
+  //   - lv_theme_default_init() keeps ONE global theme struct, so this re-initializes the very theme
+  //     the display is already pointing at, then calls lv_obj_report_style_change() itself.
+  //   - font is &lv_font_montserrat_14 == LV_FONT_DEFAULT, i.e. exactly what the auto-init used, so
+  //     no metrics change anywhere (our own screens set their fonts explicitly regardless).
+  //   - REGRESSION GUARD: every widget on the custom screens (status bar, arcs, bars, token cards,
+  //     dots, banner, tile backgrounds) sets its own bg/arc/text colors and zero border widths, so a
+  //     theme swap cannot repaint them; only theme-defaulted stock widgets change.
+  // lv_conf.h's LV_THEME_DEFAULT_DARK is flipped to 1 as well, so even the auto-init is dark and the
+  // light palette is never built; this call additionally sets the accent colors, which lv_conf can't.
+  lv_theme_t *th = lv_theme_default_init(disp,
+                                         lv_color_hex(0x4A90D9) /* primary: our blue action buttons */,
+                                         lv_color_hex(0xD97757) /* secondary: claude coral */,
+                                         true /* dark */, &lv_font_montserrat_14);
+  lv_display_set_theme(disp, th);
+
   lv_indev_t *indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, touchpad_read_cb);

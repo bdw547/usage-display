@@ -46,6 +46,14 @@ static void openKeyboard(const String &ssid) {
   lv_textarea_set_password_mode(ta, true);
   lv_obj_set_width(ta, 400);
   lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, 50);
+  // Readability fix: the dark theme (lvgl_port.cpp) already gives this light-on-dark, but the
+  // password field is the one place where an unreadable glyph costs the user a failed join, so its
+  // contrast is pinned explicitly rather than inherited — card bg, bright text, muted placeholder.
+  lv_obj_set_style_bg_color(ta, COL_CARD, 0);
+  lv_obj_set_style_text_color(ta, COL_TEXT, 0);
+  lv_obj_set_style_border_color(ta, COL_MUTED, 0);
+  lv_textarea_set_placeholder_text(ta, "password");
+  lv_obj_set_style_text_color(ta, COL_MUTED, LV_PART_TEXTAREA_PLACEHOLDER);
   lv_obj_t *kb = lv_keyboard_create(kbModal);
   lv_keyboard_set_textarea(kb, ta);
   lv_obj_set_size(kb, SCREEN_W, 220);
@@ -112,7 +120,11 @@ static void openKeyboardDeferred(lv_timer_t *) {
 static void onScanResults(std::vector<std::pair<String, int>> &nets) {
   if (!scanModal || !scanList) return;
   if (scanSpinner) lv_obj_add_flag(scanSpinner, LV_OBJ_FLAG_HIDDEN);
-  if (nets.empty()) { lv_list_add_text(scanList, "No networks found - close and retry"); return; }
+  if (nets.empty()) {
+    lv_obj_t *t = lv_list_add_text(scanList, "No networks found - close and retry");
+    lv_obj_set_style_text_color(t, COL_MUTED, 0);
+    return;
+  }
   // F6: hard cap on rows. `nets` is sorted by RSSI descending (wifi_mgr_scan_done), so this keeps
   // the 12 strongest. Each row is 3 LVGL objects plus a heap String; a dense apartment/office scan
   // returning 30-50 SSIDs would otherwise allocate ~15-20KB of the fixed pool for the list alone.
@@ -121,6 +133,7 @@ static void onScanResults(std::vector<std::pair<String, int>> &nets) {
     if (shown++ >= MAX_SCAN_ROWS) break;
     String txt = n.first + "  (" + String(n.second) + " dBm)";
     lv_obj_t *btn = lv_list_add_button(scanList, LV_SYMBOL_WIFI, txt.c_str());
+    lv_obj_set_style_text_color(btn, COL_TEXT, 0); // readability: pin row contrast on the dark list bg
     lv_obj_set_user_data(btn, new String(n.first));
     // Fix round 1 (Critical): ownership moved to the LVGL delete lifecycle. The previous
     // "delete on click" freed the String while the button (and its dangling user_data) stayed
@@ -173,6 +186,7 @@ static void rebuildSavedList() {
   lv_obj_clean(savedList);
   for (auto &c : wifi_mgr_saved()) {
     lv_obj_t *btn = lv_list_add_button(savedList, LV_SYMBOL_SAVE, c.ssid.c_str());
+    lv_obj_set_style_text_color(btn, COL_TEXT, 0); // readability: pin row contrast on COL_CARD
     lv_obj_t *trash = lv_button_create(btn);
     lv_obj_t *tl = lv_label_create(trash);
     lv_label_set_text(tl, LV_SYMBOL_TRASH);
@@ -187,7 +201,10 @@ static void rebuildSavedList() {
       if (ssid) { wifi_mgr_forget(*ssid); rebuildSavedList(); } // NO delete here — DELETE owns it
     }, LV_EVENT_CLICKED, nullptr);
   }
-  if (wifi_mgr_saved().empty()) lv_list_add_text(savedList, "No saved networks - add one below");
+  if (wifi_mgr_saved().empty()) {
+    lv_obj_t *t = lv_list_add_text(savedList, "No saved networks - add one below");
+    lv_obj_set_style_text_color(t, COL_MUTED, 0);
+  }
 }
 
 void settings_build(lv_obj_t *tile) {
