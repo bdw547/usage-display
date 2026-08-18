@@ -14,6 +14,9 @@ COLLECTOR_DIR="$(cd "$HERE/.." && pwd)"
 
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
+# The unit sandbox (ProtectSystem=strict) whitelists this path via ReadWritePaths; systemd
+# fails namespace setup (226/NAMESPACE) if it doesn't exist yet, so create it up front.
+mkdir -p "$HOME/.local/share/usage-collector"
 sed -e "s|__NODE__|$NODE_BIN|" -e "s|__COLLECTOR__|$COLLECTOR_DIR|" \
   "$HERE/usage-collector.service" > "$UNIT_DIR/usage-collector.service"
 systemctl --user daemon-reload
