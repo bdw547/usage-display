@@ -1,7 +1,7 @@
 // Pure merge logic — no Workers APIs so it unit-tests in plain Node.
 
 // B3: a machine that stopped reporting must not keep inflating the summed token
-// windows (especially "today") for the whole 7-day KV TTL.
+// windows (especially "today") for the whole 7-day retention window.
 const TOKENS_MAX_AGE_SEC = 24 * 3600;
 
 export function relSeconds(isoString, nowMs) {
@@ -60,7 +60,7 @@ function relWindow(w, nowMs) {
 
 // Shape every machine's section, keep the ones that survived and carry usable data,
 // then let the freshest (smallest skew-free age) win. Shaping per machine inside a
-// try/catch is B5: one malformed snapshot in KV must never 500 the whole summary.
+// try/catch is B5: one malformed stored snapshot must never 500 the whole summary.
 function freshestSection(snapshots, nowMs, pick, shape, usable) {
   let best = null;
   for (const s of snapshots) {

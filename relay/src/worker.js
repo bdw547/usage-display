@@ -1,21 +1,13 @@
 import { mergeSnapshots } from './merge.js';
 
-const WEEK_SECONDS = 604800;
+const WEEK_MS = 604800_000;
 const MAX_BODY_BYTES = 32 * 1024;               // B5
 const MACHINE_ID_RE = /^[\w.-]{1,64}$/;         // B5
-const TOKEN_WRITE_MIN_MS = 150_000;             // B4: token-only churn costs at most one write / 150s
-// R3a: 300_000 -> 240_000. The firmware's per-section stale chips need the machine's reported age to
-// refresh comfortably inside their thresholds (the tightest is Claude tokens at 450s); a 300s
-// heartbeat left almost no headroom once the device's own 20s poll and the token write deferral
-// stacked on top, so idle-but-healthy data could trip the chip. Costs ~+70 writes/day (~360/day
-// worst case for one idle machine), still well inside the 1000/day free-tier write cap.
-const HEARTBEAT_MS = 240_000;                   // B4: refresh age + 7-day TTL when nothing changed
-const LIST_CACHE_MS = 300_000;                  // B4: KV list() is capped at 1000/day on the free plan
 
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
 
-// Test seam: the worker's only clock.
+// Test seam: the relay's only clock (shared by the worker and the DO).
 let clock = () => Date.now();
 export function _setClock(fn) { clock = typeof fn === 'function' ? fn : () => Date.now(); }
 
@@ -38,83 +30,71 @@ function tokenEquals(a, b) {
   return diff === 0;
 }
 
-// --- B4: KV write budget -----------------------------------------------------
-// Free plan: 1000 writes/day and 1000 list/day. The shipped cadences (push every
-// 30s, device poll every 20s) would spend 2880 writes + 4320 lists per day, so the
-// relay self-DoSes mid-afternoon. Both are fixed here: writes are skipped when they
-// would not change what the device renders, and the key list is cached per isolate.
+// --- Storage: one Durable Object holding every machine's latest snapshot ------
+// Replaces the KV design whose free-tier budgets (1000 writes/day, 1000 lists/day)
+// this relay outgrew: the per-isolate list cache bought far less than designed
+// because free-plan isolates are evicted and scattered across POPs, and change-heavy
+// days rode the write cap. The DO free tier allows 100k row writes and 5M row reads
+// per day, so every push is persisted as-is — no write budget, no list cache, and
+// token churn reaches the device on the next poll instead of up to 150s later.
+// Single instance: state is a Map hydrated from SQLite-backed storage once per DO
+// lifetime; summaries are served from memory.
+export class UsageStore {
+  #ctx;
+  #machines = null;   // Map<machineId, snapshot>
+  #loading = null;
 
-// Deterministic deep-equal by canonical stringification (key order independent).
-function canon(v) {
-  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
-  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
-  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
-}
+  constructor(ctx, _env) { this.#ctx = ctx; }
 
-// Drop the timestamps that move on every cycle without changing what is displayed.
-function stripStamps(v) {
-  if (Array.isArray(v)) return v.map(stripStamps);
-  if (v !== null && typeof v === 'object') {
-    const out = {};
-    for (const [k, val] of Object.entries(v)) {
-      if (k === 'sentAt' || k === 'receivedAt' || k === 'fetchedAt' || k === 'computedAt') continue;
-      out[k] = stripStamps(val);
+  async #load() {
+    this.#loading ??= this.#ctx.storage.list().then((stored) => { this.#machines = new Map(stored); });
+    await this.#loading;
+  }
+
+  async fetch(request) {
+    await this.#load();
+    const url = new URL(request.url);
+    const nowMs = clock();
+
+    if (request.method === 'POST' && url.pathname === '/push') {
+      const snap = await request.json();  // already validated by the worker in front
+      snap.receivedAt = new Date(nowMs).toISOString();
+      this.#machines.set(snap.machineId, snap);
+      await this.#ctx.storage.put(snap.machineId, snap);
+      return json({ ok: true });
     }
-    return out;
+
+    if (request.method === 'GET' && url.pathname === '/summary') {
+      // Prune machines silent for over a week (the old KV TTL, made explicit).
+      // Every stored snapshot was stamped receivedAt on write, so an unparseable
+      // stamp means a corrupt row — prune those too.
+      for (const [id, snap] of this.#machines) {
+        const receivedMs = Date.parse(snap?.receivedAt ?? '');
+        if (!(Number.isFinite(receivedMs) && nowMs - receivedMs <= WEEK_MS)) {
+          this.#machines.delete(id);
+          await this.#ctx.storage.delete(id);
+        }
+      }
+      return json(mergeSnapshots([...this.#machines.values()], nowMs));
+    }
+
+    return json({ error: 'not found' }, 404);
   }
-  return v;
 }
 
-const vendorValues = (snap) => {
-  const s = snap !== null && typeof snap === 'object' ? { ...snap } : {};
-  const claude = s.claude !== null && typeof s.claude === 'object' ? { ...s.claude } : {};
-  delete claude.tokens;
-  s.claude = claude;
-  return canon(stripStamps(s));
-};
-const tokenValues = (snap) => canon(stripStamps(snap?.claude?.tokens ?? null));
-
-export function persistDecision(stored, incoming, nowMs) {
-  if (!stored) return { put: true, reason: 'new-machine' };
-  const storedAt = Date.parse(stored.receivedAt ?? stored.sentAt ?? '');
-  const ageMs = Number.isNaN(storedAt) ? Infinity : nowMs - storedAt;
-
-  // Vendor limits/quota/extraUsage values changed: write straight through so the
-  // percentages keep their spec §2 F8 latency (~5 min end to end).
-  if (vendorValues(stored) !== vendorValues(incoming)) return { put: true, reason: 'values-changed' };
-
-  // Token counters move on nearly every 30s cycle; one write per 150s is plenty.
-  if (tokenValues(stored) !== tokenValues(incoming)) {
-    return ageMs >= TOKEN_WRITE_MIN_MS
-      ? { put: true, reason: 'tokens-changed' }
-      : { put: false, reason: 'tokens-rate-limited' };
-  }
-
-  // Nothing changed: an occasional heartbeat keeps machines[].ageSec honest and
-  // refreshes the 7-day KV TTL.
-  return ageMs >= HEARTBEAT_MS ? { put: true, reason: 'heartbeat' } : { put: false, reason: 'unchanged' };
-}
-
-let listCache = { keys: null, at: 0 };
-export function _resetListCache() { listCache = { keys: null, at: 0 }; }
-
-async function machineKeys(env, nowMs) {
-  if (listCache.keys && nowMs - listCache.at < LIST_CACHE_MS) return listCache.keys;
-  const { keys } = await env.USAGE_KV.list({ prefix: 'machine:' });
-  listCache = { keys: keys.map((k) => k.name), at: nowMs };
-  return listCache.keys;
-}
+// The single store instance. Auth and validation stay out here in the stateless
+// worker so junk traffic (workers.dev gets scanned) never invokes the DO.
+const store = (env) => env.USAGE_DO.get(env.USAGE_DO.idFromName('v1'));
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const nowMs = clock();
 
     if (request.method === 'POST' && url.pathname === '/v1/push') {
       if (!tokenEquals(bearer(request), env.PUSH_TOKEN)) return json({ error: 'unauthorized' }, 401);
 
       // B5: bound the body before parsing it — one compromised collector must not be
-      // able to stuff KV (and every device's parser) with megabytes.
+      // able to stuff the store (and every device's parser) with megabytes.
       const declared = Number(request.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return json({ error: 'body too large' }, 413);
       let raw;
@@ -128,37 +108,12 @@ export default {
         return json({ error: 'machineId required' }, 400);
       }
 
-      const key = `machine:${snap.machineId}`;
-      let stored = null;
-      try {
-        const prev = await env.USAGE_KV.get(key);
-        if (prev) stored = JSON.parse(prev);
-      } catch { stored = null; } // unreadable/corrupt previous value: just overwrite it
-
-      const decision = persistDecision(stored, snap, nowMs);
-      if (!decision.put) return json({ ok: true, skipped: true });
-
-      snap.receivedAt = new Date(nowMs).toISOString();
-      await env.USAGE_KV.put(key, JSON.stringify(snap), { expirationTtl: WEEK_SECONDS });
-      // R4: the key list is cached for LIST_CACHE_MS, so a machine that has never been seen before
-      // would otherwise stay invisible to /v1/summary for up to 5 minutes after its first push —
-      // exactly the moment someone is watching to see whether a new collector works. Invalidate on
-      // the new-machine write only (after the put succeeded): known machines are already re-read
-      // every summary, so they never need this, and one extra list() per new machine is free.
-      if (decision.reason === 'new-machine') _resetListCache();
-      return json({ ok: true });
+      return store(env).fetch(new Request('https://do/push', { method: 'POST', body: JSON.stringify(snap) }));
     }
 
     if (request.method === 'GET' && url.pathname === '/v1/summary') {
       if (!tokenEquals(bearer(request), env.READ_TOKEN)) return json({ error: 'unauthorized' }, 401);
-      const names = await machineKeys(env, nowMs);
-      const snapshots = [];
-      for (const name of names) {
-        const raw = await env.USAGE_KV.get(name); // values are always read fresh; only the key list is cached
-        if (!raw) continue;
-        try { snapshots.push(JSON.parse(raw)); } catch { /* skip corrupt entries */ }
-      }
-      return json(mergeSnapshots(snapshots, nowMs));
+      return store(env).fetch(new Request('https://do/summary'));
     }
 
     return json({ error: 'not found' }, 404);

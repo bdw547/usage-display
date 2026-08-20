@@ -20,15 +20,16 @@ Every screen carries a status bar (WiFi, clock, data-freshness dot, machine coun
 ## How it works
 
 ```
-[your machines]                     [Cloudflare]                  [ESP32 display]
-usage-collector ──POST /v1/push──▶  Worker + KV  ◀──GET /v1/summary── firmware
-  every 30s        per-machine        merge at read:    every 20s      LVGL UI
-                   snapshots          tokens summed,
+[your machines]                       [Cloudflare]                    [ESP32 display]
+usage-collector ──POST /v1/push──▶  Worker + Durable  ◀──GET /v1/summary── firmware
+  every 30s        per-machine        Object              every 20s      LVGL UI
+                   snapshots          merge at read:
+                                      tokens summed,
                                       limits freshest-wins (clock-skew safe)
 ```
 
 - [`collector/`](collector/) — zero-dependency Node.js daemon (systemd user service). Reads Claude Code's local transcript logs for token counts, and the CLIs' own credentials (read-only, never refreshes them) for account-wide limit percentages; Copilot quota via the same endpoint VS Code uses. Pushes snapshots to the relay.
-- [`relay/`](relay/) — Cloudflare Worker + KV (fits the free tier). Bearer-token auth both directions, per-machine snapshots merged at read time with clock-skew-safe freshness and stale-machine exclusion.
+- [`relay/`](relay/) — Cloudflare Worker + Durable Object (fits the free tier with ~10× headroom). Bearer-token auth both directions, per-machine snapshots merged at read time with clock-skew-safe freshness and stale-machine exclusion.
 - [`firmware/`](firmware/) — PlatformIO / Arduino core 3.x / LVGL 9 / Arduino_GFX. ST7701 RGB panel with bounce-buffer + internal-RAM draw buffers (the ESP32-S3 WiFi/RGB coexistence dance), GT911 touch, multi-network WiFi state machine, TLS-pinned HTTPS polling on a dedicated core.
 
 ## Getting started

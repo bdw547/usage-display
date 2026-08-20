@@ -222,5 +222,5 @@ test('B5: garbage-shaped sections are filtered instead of winning freshest-wins'
 test('B5: totally malformed entries (null, string, number) do not throw', () => {
   const s = mergeSnapshots([null, 'string', 42, [], snap('m1')], NOW);
   assert.equal(s.claude.limits.session.pct, 13);
-  assert.equal(s.machines.length, 5, 'every KV entry is still accounted for');
+  assert.equal(s.machines.length, 5, 'every stored machine is still accounted for');
 });

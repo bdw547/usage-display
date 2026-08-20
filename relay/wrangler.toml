@@ -2,9 +2,15 @@ name = "usage-relay"
 main = "src/worker.js"
 compatibility_date = "2026-08-01"
 
-[[kv_namespaces]]
-binding = "USAGE_KV"
-id = "c018f06c471249d9a7eb61cf2a68eca4"
+# SQLite-backed Durable Object (the only DO flavor on the free plan). One instance
+# holds every machine's latest snapshot; see the note above UsageStore in worker.js.
+[[durable_objects.bindings]]
+name = "USAGE_DO"
+class_name = "UsageStore"
+
+[[migrations]]
+tag = "v2-durable-object"
+new_sqlite_classes = ["UsageStore"]
 
 [observability]
 enabled = true
