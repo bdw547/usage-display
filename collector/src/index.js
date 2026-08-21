@@ -12,6 +12,7 @@ import { fetchCopilotQuota } from './sources/copilot.js';
 import { buildSnapshot } from './snapshot.js';
 import { pushSnapshot } from './push.js';
 import { acceptPollResult } from './poll.js';
+import { shouldSave } from './persist.js';
 
 const ARGS = new Set(process.argv.slice(2));
 const ONCE = ARGS.has('--once');
@@ -23,6 +24,7 @@ const STATE_PATH = join(HOME, '.local/share/usage-collector/state.json');
 const PROJECTS_DIR = join(HOME, '.claude/projects');
 
 const PUSH_EVERY_MS = 30_000;
+const SAVE_MIN_INTERVAL_MS = 60_000;   // at most one ~1.4MB state write per minute
 const POLLS = [
   { key: 'claudeLimits', everyMs: 5 * 60_000, fn: () => fetchClaudeLimits() },
   { key: 'codexLimits', everyMs: 5 * 60_000, fn: () => fetchCodexLimits() },
@@ -47,6 +49,8 @@ async function main() {
   };
   persistCache();
   const nextAt = Object.fromEntries(POLLS.map((p) => [p.key, 0]));
+  let dirty = false;
+  let lastSaveMs = 0;
   let stopping = false;
   process.on('SIGTERM', () => { stopping = true; });
   process.on('SIGINT', () => { stopping = true; });
@@ -58,9 +62,8 @@ async function main() {
 
     // 1) Local token scan (cheap; every cycle)
     try {
-      scanClaudeTokens(state, { projectsDir: PROJECTS_DIR });
+      if (scanClaudeTokens(state, { projectsDir: PROJECTS_DIR })) dirty = true;
       cache.claudeTokens = tokenWindows(state, {});
-      saveState(STATE_PATH, state);
     } catch (err) {
       log('token scan failed:', err.message);
     }
@@ -87,7 +90,20 @@ async function main() {
     }
     if (cacheChanged) {
       persistCache(); // B6: survive a restart
-      try { saveState(STATE_PATH, state); } catch (err) { log('state save failed:', err.message); }
+      dirty = true;
+    }
+
+    // One throttled save site: the whole ~1.4MB file is rewritten per save, so skip
+    // the cycles that changed nothing and rate-limit the rest. A clean shutdown still
+    // flushes unconditionally after the loop.
+    if (shouldSave({ dirty, lastSaveMs, nowMs: Date.now(), minIntervalMs: SAVE_MIN_INTERVAL_MS })) {
+      try {
+        saveState(STATE_PATH, state);
+        lastSaveMs = Date.now();
+        dirty = false;
+      } catch (err) {
+        log('state save failed:', err.message); // stays dirty; retried next cycle
+      }
     }
 
     // 3) Assemble + push
