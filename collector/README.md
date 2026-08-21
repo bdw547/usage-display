@@ -6,6 +6,12 @@ Codex limit % (`chatgpt.com` usage endpoint, falling back to `~/.codex/sessions`
 and Copilot premium-request quota (`api.github.com/copilot_internal/user` via `gh auth token`).
 Pushes a snapshot to the relay every 30s. Never refreshes vendor tokens (read-only).
 
+Scan state (byte offsets, dedupe keys, day totals, last-good vendor sections) lives in
+`~/.local/share/usage-collector/state.json` and is rewritten whole on each save, so saves are
+throttled: a cycle that changed nothing writes nothing, and the rest write at most once a minute.
+A clean shutdown always flushes. Dedupe keys are pruned after 7 days, which keeps the file around
+0.6MB; day totals are never pruned, so all-time counts survive.
+
 ## Install on a new machine
 1. `git clone` this repo (or copy the `collector/` directory) — Node 22+ required.
 2. Create `~/.config/usage-collector/config.json` (chmod 600):
