@@ -57,3 +57,29 @@ test('windows: today / rolling-7d / calendar month / all-time + cost', () => {
   assert.ok(Math.abs(w.costUsd.allTime - 0.1298) < 0.0003, `allTime ${w.costUsd.allTime}`);
   assert.ok(w.computedAt);
 });
+
+test('scan reports whether it changed state', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uc-proj-'));
+  cpSync(FIXTURES, dir, { recursive: true });
+  const state = freshState();
+
+  assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), true, 'first scan ingests records');
+  assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), false, 'second scan with no new lines changes nothing');
+
+  appendFileSync(join(dir, 'proj-a', 'session1.jsonl'), JSON.stringify({
+    type: 'assistant',
+    timestamp: '2026-08-13T18:00:00Z',
+    requestId: 'req_new',
+    message: { id: 'msg_new', model: 'claude-fable-5', usage: { input_tokens: 5, output_tokens: 6 } },
+  }) + '\n');
+  assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), true, 'an appended line is a change');
+});
+
+test('scan reports a change when it prunes an expired dedupe key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uc-proj-'));
+  const state = freshState();
+  state.seen['stale:key'] = '2026-01-01';
+  assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), true, 'pruning mutates state');
+  assert.equal(state.seen['stale:key'], undefined, 'and the key is gone');
+  assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), false, 'nothing left to prune');
+});

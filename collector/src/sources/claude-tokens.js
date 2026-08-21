@@ -4,6 +4,8 @@ import { priceFor, costUsd } from '../prices.js';
 
 const ZERO = () => ({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0, cw5m: 0, cw1h: 0 });
 
+const SEEN_RETENTION_DAYS = 30;
+
 function localDay(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -71,17 +73,30 @@ function readNewLines(state, path, offset, size) {
   } finally { closeSync(fd); }
 }
 
+// Returns true when the scan changed `state` (advanced an offset, tracked a new file,
+// or pruned a dedupe key). The daemon rewrites the whole ~1.4MB state file on every
+// save, so it uses this to skip the writes that would persist nothing new.
 export function scanClaudeTokens(state, { projectsDir, now = new Date() } = {}) {
+  let changed = false;
   for (const path of jsonlFiles(projectsDir)) {
     let st;
     try { st = statSync(path); } catch { continue; }
+    const known = state.files[path] !== undefined;
     const rec = (state.files[path] ??= { offset: 0 });
-    if (st.size < rec.offset) rec.offset = 0; // truncated/rotated: rescan (dedupe prevents double counting)
-    if (st.size > rec.offset) rec.offset = readNewLines(state, path, rec.offset, st.size);
+    if (!known) changed = true;
+    if (st.size < rec.offset) { rec.offset = 0; changed = true; } // truncated/rotated: rescan (dedupe prevents double counting)
+    if (st.size > rec.offset) {
+      // readNewLines returns the offset unchanged when there is no complete line yet.
+      const next = readNewLines(state, path, rec.offset, st.size);
+      if (next !== rec.offset) { rec.offset = next; changed = true; }
+    }
   }
-  // prune dedupe keys older than 30 days to bound state size
-  const cutoff = localDay(new Date(now.getTime() - 30 * 86400e3));
-  for (const [k, day] of Object.entries(state.seen)) if (day < cutoff) delete state.seen[k];
+  // prune dedupe keys older than SEEN_RETENTION_DAYS to bound state size
+  const cutoff = localDay(new Date(now.getTime() - SEEN_RETENTION_DAYS * 86400e3));
+  for (const [k, day] of Object.entries(state.seen)) {
+    if (day < cutoff) { delete state.seen[k]; changed = true; }
+  }
+  return changed;
 }
 
 const addTo = (acc, b) => {
