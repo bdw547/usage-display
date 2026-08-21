@@ -27,7 +27,7 @@ const PUSH_EVERY_MS = 30_000;
 const SAVE_MIN_INTERVAL_MS = 60_000;   // at most one ~1.4MB state write per minute
 const POLLS = [
   { key: 'claudeLimits', everyMs: 5 * 60_000, fn: () => fetchClaudeLimits() },
-  { key: 'codexLimits', everyMs: 5 * 60_000, fn: () => fetchCodexLimits() },
+  { key: 'codexLimits', everyMs: 5 * 60_000, fn: () => fetchCodexLimits({ log: (m) => log('codexLimits:', m) }) },
   { key: 'copilotQuota', everyMs: 10 * 60_000, fn: () => fetchCopilotQuota() },
 ];
 

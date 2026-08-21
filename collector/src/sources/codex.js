@@ -8,12 +8,40 @@ function toIso(resetsAt) {
   return String(resetsAt);
 }
 
+// Two shapes reach this function and both are live:
+//   live endpoint : { primary_window, secondary_window } with limit_window_seconds + reset_at
+//   rollout files : { primary, secondary }               with window_minutes + resets_at
+// The endpoint renamed every one of these fields at some point, which silently broke the
+// live path and left the device showing stale rollout data, so accept both spellings.
+const hasRateLimitShape = (rl) =>
+  !!rl && typeof rl === 'object' &&
+  ('primary' in rl || 'secondary' in rl || 'primary_window' in rl || 'secondary_window' in rl);
+
+// Window length in minutes; unknown counts as short (the pre-existing rule).
+function windowMinutes(w) {
+  if (w.window_minutes != null) return w.window_minutes;
+  if (w.limit_window_seconds != null) return w.limit_window_seconds / 60;
+  return 0;
+}
+
+// Pull the rate-limit object out of a usage response, whichever shape it arrived in,
+// and lift plan_type up from wherever it lives. Returns null if nothing matches.
+export function pickRateLimits(body) {
+  if (!body || typeof body !== 'object') return null;
+  for (const candidate of [body.rate_limit, body.rate_limits, body.rateLimits, body]) {
+    if (hasRateLimitShape(candidate)) {
+      return { ...candidate, plan_type: candidate.plan_type ?? body.plan_type ?? null };
+    }
+  }
+  return null;
+}
+
 export function normalizeCodexRateLimits(rl, fetchedAt) {
   const out = { fetchedAt, fiveHour: null, weekly: null, plan: rl?.plan_type ?? null };
-  for (const w of [rl?.primary, rl?.secondary]) {
+  for (const w of [rl?.primary ?? rl?.primary_window, rl?.secondary ?? rl?.secondary_window]) {
     if (!w || w.used_percent == null) continue;
-    const win = { pct: w.used_percent, resetsAt: toIso(w.resets_at) };
-    if ((w.window_minutes ?? 0) <= 600) out.fiveHour = win;
+    const win = { pct: w.used_percent, resetsAt: toIso(w.resets_at ?? w.reset_at) };
+    if (windowMinutes(w) <= 600) out.fiveHour = win;
     else out.weekly = win;
   }
   return out;
@@ -60,7 +88,7 @@ function fileMtimeIso(path) {
   try { return new Date(statSync(path).mtimeMs).toISOString(); } catch { return null; }
 }
 
-export async function fetchCodexLimits({ home = homedir(), fetchImpl = fetch, now = () => Date.now() } = {}) {
+export async function fetchCodexLimits({ home = homedir(), fetchImpl = fetch, now = () => Date.now(), log = () => {} } = {}) {
   // 1) Try the live endpoint with the CLI's current token (never refresh it ourselves).
   try {
     const auth = JSON.parse(readFileSync(join(home, '.codex/auth.json'), 'utf8'));
@@ -73,10 +101,12 @@ export async function fetchCodexLimits({ home = homedir(), fetchImpl = fetch, no
       });
       if (res.ok) {
         const body = await res.json();
-        const rl = body?.rate_limits ?? body?.rateLimits ?? body;
-        if (rl && (rl.primary || rl.secondary)) {
-          return normalizeCodexRateLimits(rl, new Date(now()).toISOString());
-        }
+        const rl = pickRateLimits(body);
+        if (rl) return normalizeCodexRateLimits(rl, new Date(now()).toISOString());
+        // Do not let a renamed field decay quietly into the rollout fallback again.
+        log(`usage endpoint returned an unrecognized shape (top-level keys: ${Object.keys(body ?? {}).join(', ') || 'none'}); using rollout files`);
+      } else {
+        log(`usage endpoint returned HTTP ${res.status}; using rollout files`);
       }
     }
   } catch { /* fall through to rollout files */ }
