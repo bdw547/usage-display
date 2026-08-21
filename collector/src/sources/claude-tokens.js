@@ -4,7 +4,11 @@ import { priceFor, costUsd } from '../prices.js';
 
 const ZERO = () => ({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0, cw5m: 0, cw1h: 0 });
 
-const SEEN_RETENTION_DAYS = 30;
+// 7 days, not 30: `seen` is ~98% of the state file and every save rewrites the file
+// whole. The window only has to cover a transcript file shrinking (truncate/rotate)
+// and being rescanned from offset 0 — rare for UUID-named append-only session files,
+// and 30 days was never a guarantee either since one session file can span longer.
+const SEEN_RETENTION_DAYS = 7;
 
 function localDay(d) {
   const y = d.getFullYear();

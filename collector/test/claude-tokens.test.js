@@ -83,3 +83,19 @@ test('scan reports a change when it prunes an expired dedupe key', () => {
   assert.equal(state.seen['stale:key'], undefined, 'and the key is gone');
   assert.equal(scanClaudeTokens(state, { projectsDir: dir, now: NOW }), false, 'nothing left to prune');
 });
+
+test('dedupe keys are pruned after 7 days, not 30', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uc-proj-'));
+  const state = freshState();
+  const dayAgo = (n) => {
+    const d = new Date(NOW.getTime() - n * 86400e3);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  state.seen['keep:me'] = dayAgo(6);
+  state.seen['drop:me'] = dayAgo(8);
+
+  scanClaudeTokens(state, { projectsDir: dir, now: NOW });
+
+  assert.equal(state.seen['keep:me'], dayAgo(6), 'a 6-day-old key is still inside the window');
+  assert.equal(state.seen['drop:me'], undefined, 'an 8-day-old key is pruned');
+});
